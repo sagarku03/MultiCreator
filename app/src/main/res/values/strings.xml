@@ -4,17 +4,19 @@
     <string name="dpc_admin_label">MultiCreator Vault Controller</string>
     <string name="dpc_admin_description">Manages an isolated Android Work Profile partition with an independent SSAID and app data sandbox.</string>
     <string name="web_sandbox_title">MultiCreator Web Stealth</string>
+    <string name="container_host_title">MultiCreator Clone Space</string>
 
     <!-- Navigation Tabs -->
-    <string name="tab_native_cloner">Native Cloner</string>
+    <string name="tab_native_cloner">App Cloner</string>
     <string name="tab_web_stealth">Web Stealth</string>
     <string name="tab_device_health">Device Health</string>
 
     <!-- Actions & Controls -->
     <string name="action_provision_profile">Initialize Work Profile</string>
-    <string name="action_clone">Clone</string>
-    <string name="action_launch">Launch</string>
-    <string name="action_pin_home">Pin to Home</string>
+    <string name="action_clone">Clone App</string>
+    <string name="action_launch">Launch Clone</string>
+    <string name="action_pin_home">Add to Home</string>
+    <string name="status_active_clone">Active Clone</string>
     <string name="action_new_container">New Stealth Container</string>
     <string name="action_launch_sandbox">Launch Sandbox</string>
     <string name="action_rotate_fingerprint">Rotate ID</string>

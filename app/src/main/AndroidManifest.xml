@@ -51,6 +51,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Dedicated Isolated Cloned App Runtime Activity (launched from app or Home Screen shortcut) -->
+        <activity
+            android:name=".ui.screens.ContainerHostActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:documentLaunchMode="intoExisting"
+            android:exported="true"
+            android:label="@string/container_host_title"
+            android:theme="@style/Theme.MultiCreator">
+            <intent-filter>
+                <action android:name="com.example.action.LAUNCH_CONTAINER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Isolated Anti-Detect Web Sandbox Activity (supports pinned shortcuts & multi-window) -->
         <activity
             android:name=".ui.screens.WebSandboxActivity"

@@ -1,7 +1,6 @@
 package com.example.engine
 
 import android.content.Context
-import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.Bitmap
@@ -9,13 +8,15 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
-import com.example.MainActivity
+import androidx.core.graphics.drawable.toBitmap
 import com.example.data.WebContainerProfile
+import com.example.ui.screens.ContainerHostActivity
 import com.example.ui.screens.WebSandboxActivity
 
 sealed class ShortcutPinResult {
@@ -26,7 +27,8 @@ sealed class ShortcutPinResult {
 
 /**
  * Creates 1-click badged launcher shortcuts directly on the Android Home Screen using
- * ShortcutManager.requestPinShortcut() for both Work Profile apps and Web Stealth containers.
+ * ShortcutManager.requestPinShortcut() targeting ContainerHostActivity (for cloned apps)
+ * and WebSandboxActivity (for isolated Web Stealth containers).
  */
 class ShortcutCreator(private val context: Context) {
 
@@ -34,9 +36,18 @@ class ShortcutCreator(private val context: Context) {
         context.getSystemService(ShortcutManager::class.java)
 
     /**
-     * Pins a Home Screen shortcut for a native app with a neon cyber-glass isolation badge.
+     * Pins a Home Screen shortcut targeting ContainerHostActivity with EXTRA_CONTAINER_ID
+     * and badges the provided app icon Bitmap with a glowing emerald/cyan clone indicator.
      */
-    fun pinClonedAppShortcut(app: InstalledAppItem): ShortcutPinResult {
+    fun pinClonedShortcut(container: AppContainer, icon: Bitmap?): Boolean {
+        return pinClonedShortcutDetailed(container, icon) is ShortcutPinResult.Pinned
+    }
+
+    fun pinClonedShortcutDetailed(
+        container: AppContainer,
+        sourceIcon: Bitmap?,
+        fallbackDrawable: Drawable? = null
+    ): ShortcutPinResult {
         val manager = shortcutManager
             ?: return ShortcutPinResult.Unsupported("ShortcutManager unavailable on this device.")
         if (!manager.isRequestPinShortcutSupported) {
@@ -45,23 +56,21 @@ class ShortcutCreator(private val context: Context) {
             )
         }
 
-        val launchIntent = Intent(context, MainActivity::class.java).apply {
-            action = ACTION_LAUNCH_CLONED_APP
-            putExtra(EXTRA_TARGET_PACKAGE, app.packageName)
-            putExtra(EXTRA_TARGET_APP_NAME, app.appName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val resolvedBitmap = sourceIcon ?: fallbackDrawable?.let {
+            runCatching { it.toBitmap(width = 144, height = 144) }.getOrNull()
         }
 
-        val badgedBitmap = renderBadgedAppIcon(
-            sourceDrawable = app.icon,
-            fallbackInitial = app.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "M",
-            badgeColor = if (app.isClonedInWorkProfile) 0xFF10B981.toInt() else 0xFF06B6D4.toInt()
+        val badgedBitmap = renderBadgedCloneBitmap(
+            sourceBitmap = resolvedBitmap,
+            fallbackInitial = container.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "M"
         )
 
-        val shortLabel = "${app.appName} Vault".take(25)
-        val shortcutInfo = ShortcutInfo.Builder(context, "mc_app_${app.packageName}")
+        val launchIntent = ContainerHostActivity.createLaunchIntent(context, container)
+        val shortLabel = "${container.appName} Clone".take(25)
+
+        val shortcutInfo = ShortcutInfo.Builder(context, "mc_clone_${container.id}")
             .setShortLabel(shortLabel)
-            .setLongLabel("${app.appName} (MultiCreator)")
+            .setLongLabel("${container.appName} (MultiCreator Clone)")
             .setIcon(Icon.createWithAdaptiveBitmap(badgedBitmap))
             .setIntent(launchIntent)
             .build()
@@ -128,24 +137,23 @@ class ShortcutCreator(private val context: Context) {
         }
     }
 
-    private fun renderBadgedAppIcon(
-        sourceDrawable: Drawable?,
-        fallbackInitial: String,
-        badgeColor: Int
+    private fun renderBadgedCloneBitmap(
+        sourceBitmap: Bitmap?,
+        fallbackInitial: String
     ): Bitmap {
         val size = 192
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        // Deep Obsidian backdrop for adaptive safe-zone consistency
+        // Deep Midnight Obsidian canvas matching adaptive icon safe zone
         canvas.drawColor(0xFF090D16.toInt())
 
         val padding = 34
-        if (sourceDrawable != null) {
-            sourceDrawable.setBounds(padding, padding, size - padding, size - padding)
-            sourceDrawable.draw(canvas)
+        if (sourceBitmap != null) {
+            val dst = Rect(padding, padding, size - padding, size - padding)
+            canvas.drawBitmap(sourceBitmap, null, dst, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
         } else {
-            val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val tilePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = LinearGradient(
                     0f, 0f, size.toFloat(), size.toFloat(),
                     0xFF06B6D4.toInt(), 0xFF6366F1.toInt(),
@@ -154,7 +162,7 @@ class ShortcutCreator(private val context: Context) {
             }
             canvas.drawRoundRect(
                 RectF(36f, 36f, size - 36f, size - 36f),
-                32f, 32f, circlePaint
+                32f, 32f, tilePaint
             )
             val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
@@ -165,20 +173,26 @@ class ShortcutCreator(private val context: Context) {
             canvas.drawText(fallbackInitial, size / 2f, size / 2f + 24f, textPaint)
         }
 
-        // Luminous bottom-right Work Vault badge
-        val badgeCenterX = size - 44f
-        val badgeCenterY = size - 44f
+        // Luminous bottom-right Clone Indicator Badge (Emerald-to-Cyan glow)
+        val cx = size - 44f
+        val cy = size - 44f
         val outerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF090D16.toInt() }
-        val badgeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = badgeColor }
+        val badgeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                cx - 20f, cy - 20f, cx + 20f, cy + 20f,
+                0xFF10B981.toInt(), 0xFF06B6D4.toInt(),
+                Shader.TileMode.CLAMP
+            )
+        }
         val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            textSize = 24f
+            textSize = 23f
             typeface = Typeface.DEFAULT_BOLD
             textAlign = Paint.Align.CENTER
         }
-        canvas.drawCircle(badgeCenterX, badgeCenterY, 24f, outerRing)
-        canvas.drawCircle(badgeCenterX, badgeCenterY, 19f, badgeFill)
-        canvas.drawText("2", badgeCenterX, badgeCenterY + 8.5f, glyphPaint)
+        canvas.drawCircle(cx, cy, 24f, outerRing)
+        canvas.drawCircle(cx, cy, 19f, badgeFill)
+        canvas.drawText("2x", cx, cy + 8f, glyphPaint)
 
         return bitmap
     }
@@ -188,7 +202,6 @@ class ShortcutCreator(private val context: Context) {
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        // Gradient cyber-glass tile
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = LinearGradient(
                 0f, 0f, size.toFloat(), size.toFloat(),
@@ -215,7 +228,6 @@ class ShortcutCreator(private val context: Context) {
         }
         canvas.drawText(monogram, size / 2f, size / 2f + 19f, textPaint)
 
-        // Emerald stealth shield dot
         val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF090D16.toInt() }
         val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF10B981.toInt() }
         canvas.drawCircle(size - 44f, size - 44f, 20f, ringPaint)

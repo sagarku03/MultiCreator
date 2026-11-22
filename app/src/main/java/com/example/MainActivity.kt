@@ -23,6 +23,7 @@ import com.example.engine.ShortcutCreator
 import com.example.engine.UpdateInfo
 import com.example.ui.components.UpdateDialog
 import com.example.ui.components.UpdateDialogState
+import com.example.ui.screens.ContainerHostActivity
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.WebSandboxActivity
 import com.example.ui.theme.MultiCreatorTheme
@@ -152,6 +153,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
+                            is MultiCreatorEvent.LaunchContainer -> {
+                                val containerIntent = ContainerHostActivity.createLaunchIntent(
+                                    context = this@MainActivity,
+                                    container = event.container
+                                )
+                                startActivity(containerIntent)
+                            }
+
                             is MultiCreatorEvent.OpenWebSandbox -> {
                                 val sandboxIntent = WebSandboxActivity.createLaunchIntent(
                                     context = this@MainActivity,
@@ -171,6 +180,7 @@ class MainActivity : ComponentActivity() {
                     onRefresh = viewModel::refreshEcosystem,
                     onProvisionWorkProfile = viewModel::requestWorkProfileProvisioning,
                     onCloneOrLaunchApp = viewModel::cloneOrLaunchApp,
+                    onDeleteLocalClone = viewModel::deleteLocalClone,
                     onPinAppShortcut = viewModel::pinAppShortcut,
                     onLaunchWebContainer = viewModel::launchWebContainer,
                     onCreateWebContainer = viewModel::createWebContainer,

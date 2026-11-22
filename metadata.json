@@ -1,0 +1,6 @@
+{
+  "name": "MultiCreator",
+  "description": "Privacy-first dual ecosystem manager with Android Work Profile app isolation, 1-click Home Screen shortcuts, and anti-detect Web Stealth containers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

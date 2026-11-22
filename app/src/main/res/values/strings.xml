@@ -55,4 +55,13 @@
     <string name="sandbox_clear_cookies">Wipe container cookies</string>
     <string name="sandbox_pin_shortcut">Pin container to Home Screen</string>
     <string name="sandbox_shield_info">Anti-detect shield status</string>
+
+    <!-- In-App Auto-Updater -->
+    <string name="update_action_now">Update Now</string>
+    <string name="update_action_later">Later</string>
+    <string name="update_action_install">Install Now</string>
+    <string name="update_action_allow_sources">Allow Installs</string>
+    <string name="update_action_retry">Retry Download</string>
+    <string name="update_action_check">Check for Updates</string>
+    <string name="update_changelog_label">What\'s New</string>
 </resources>

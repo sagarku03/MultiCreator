@@ -113,6 +113,8 @@ fun HomeScreen(
     onPinWebShortcut: (WebContainerProfile) -> Unit,
     onDeleteWebContainer: (WebContainerProfile) -> Unit,
     onToggleSsaid: () -> Unit,
+    isCheckingUpdates: Boolean,
+    onCheckForUpdates: () -> Unit,
     onPostMessage: (String) -> Unit,
     onConsumeMessage: () -> Unit
 ) {
@@ -214,12 +216,17 @@ fun HomeScreen(
                             clonedAppCount = uiState.clonedCount,
                             webContainerCount = uiState.webContainers.size,
                             isSsaidRevealed = uiState.isSsaidRevealed,
+                            isCheckingUpdates = isCheckingUpdates,
                             onToggleSsaid = onToggleSsaid,
                             onProvisionWorkProfile = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onProvisionWorkProfile()
                             },
-                            onCopySsaid = onPostMessage
+                            onCopySsaid = onPostMessage,
+                            onCheckForUpdates = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onCheckForUpdates()
+                            }
                         )
                     }
                 }

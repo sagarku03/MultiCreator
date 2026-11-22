@@ -16,8 +16,16 @@ android {
     applicationId = "com.aistudio.multicreator.vqxkpm"
     minSdk = 26
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+
+    // Dynamic CI/CD versioning via Gradle CLI flags (-PversionCode=... -PversionName=...)
+    val dynamicVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
+    val dynamicVersionName =
+      (project.findProperty("versionName") as? String)?.takeIf { it.isNotBlank() } ?: "1.0.0"
+    versionCode = dynamicVersionCode
+    versionName = dynamicVersionName
+
+    buildConfigField("String", "GITHUB_OWNER", "\"sagarku03\"")
+    buildConfigField("String", "GITHUB_REPO", "\"MultiCreator\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

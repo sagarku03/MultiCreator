@@ -1,0 +1,104 @@
+name: Build & Release MultiCreator APK
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build, Sign & Publish Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "gradle"
+
+      - name: Resolve Dynamic Version Code & Version Name
+        id: version
+        shell: bash
+        run: |
+          VERSION_CODE="${{ github.run_number }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RAW_TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${RAW_TAG#v}"
+            RELEASE_TAG="${RAW_TAG}"
+          else
+            VERSION_NAME="1.0.${VERSION_CODE}"
+            RELEASE_TAG="v${VERSION_NAME}"
+          fi
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Version: v${VERSION_NAME} (code ${VERSION_CODE})"
+
+      - name: Prepare Release Keystore for Gradle
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > my-upload-key.jks
+
+      - name: Grant Execute Permission for Gradle Wrapper
+        if: ${{ hashFiles('gradlew') != '' }}
+        run: chmod +x ./gradlew
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease \
+            -PversionCode=${{ steps.version.outputs.version_code }} \
+            -PversionName=${{ steps.version.outputs.version_name }} \
+            --no-daemon
+
+      - name: Sign Android Release APK
+        id: sign_app
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "35.0.0"
+
+      - name: Rename Signed APK Artifact
+        id: rename_apk
+        shell: bash
+        run: |
+          SIGNED_APK="${{ steps.sign_app.outputs.signedReleaseFile }}"
+          FINAL_NAME="MultiCreator-v${{ steps.version.outputs.version_name }}.apk"
+          cp "${SIGNED_APK}" "${FINAL_NAME}"
+          echo "apk_file=${FINAL_NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh "${FINAL_NAME}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.release_tag }}
+          name: MultiCreator v${{ steps.version.outputs.version_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.rename_apk.outputs.apk_file }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

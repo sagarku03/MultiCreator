@@ -23,10 +23,12 @@ import androidx.compose.material.icons.rounded.Fingerprint
 import androidx.compose.material.icons.rounded.FolderSpecial
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WarningAmber
+import com.example.BuildConfig
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -68,9 +70,11 @@ fun DeviceHealthTab(
     clonedAppCount: Int,
     webContainerCount: Int,
     isSsaidRevealed: Boolean,
+    isCheckingUpdates: Boolean,
     onToggleSsaid: () -> Unit,
     onProvisionWorkProfile: () -> Unit,
     onCopySsaid: (String) -> Unit,
+    onCheckForUpdates: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -305,6 +309,46 @@ fun DeviceHealthTab(
                         passed = true,
                         title = "Zero APK Repackaging",
                         subtitle = "Avoids signature mismatch flags from Instagram & YouTube Play Integrity checks."
+                    )
+                }
+            }
+        }
+
+        // GitHub Releases OTA Auto-Update Card
+        item(key = "ota_updater_card") {
+            LiquidGlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                highlightAccent = NeonCyan
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "GitHub Auto-Updater",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
+                        )
+                        GlassBadge(
+                            label = "v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE})",
+                            color = NeonCyanBright
+                        )
+                    }
+                    Text(
+                        text = "Release Channel: ${BuildConfig.GITHUB_OWNER}/${BuildConfig.GITHUB_REPO} • Signed HTTPS APK Stream",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    LiquidPillButton(
+                        text = if (isCheckingUpdates) "Checking GitHub Releases…" else stringResource(R.string.update_action_check),
+                        icon = Icons.Rounded.SystemUpdateAlt,
+                        enabled = !isCheckingUpdates,
+                        onClick = onCheckForUpdates,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("manual_check_updates_button")
                     )
                 }
             }

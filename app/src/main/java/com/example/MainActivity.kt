@@ -11,14 +11,26 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.DpcAdminReceiver
+import com.example.engine.GitHubUpdater
+import com.example.engine.InstallDispatchResult
 import com.example.engine.ShortcutCreator
+import com.example.engine.UpdateInfo
+import com.example.ui.components.UpdateDialog
+import com.example.ui.components.UpdateDialogState
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.WebSandboxActivity
 import com.example.ui.theme.MultiCreatorTheme
 import com.example.ui.viewmodel.MultiCreatorEvent
 import com.example.ui.viewmodel.MultiCreatorViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -26,10 +38,20 @@ class MainActivity : ComponentActivity() {
         MultiCreatorViewModel.Factory(applicationContext)
     }
 
+    private lateinit var gitHubUpdater: GitHubUpdater
+    private var pendingInstallFile: File? = null
+    private var onUnknownSourcesReturned: (() -> Unit)? = null
+
     private val workProfileProvisioningLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         viewModel.onProvisioningResult(result.resultCode == RESULT_OK)
+    }
+
+    private val unknownSourcesPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        onUnknownSourcesReturned?.invoke()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,11 +61,83 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
 
+        gitHubUpdater = GitHubUpdater(applicationContext)
         handleIncomingIntent(intent)
 
         setContent {
             MultiCreatorTheme {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                val coroutineScope = rememberCoroutineScope()
+
+                var updateDialogState by remember {
+                    mutableStateOf<UpdateDialogState>(UpdateDialogState.Hidden)
+                }
+                var isCheckingUpdates by remember { mutableStateOf(false) }
+                var activeDownloadJob by remember { mutableStateOf<Job?>(null) }
+
+                fun dispatchApkInstall(apkFile: File, currentInfo: UpdateInfo?) {
+                    when (val res = gitHubUpdater.installApk(apkFile)) {
+                        InstallDispatchResult.LaunchedInstaller -> {
+                            pendingInstallFile = null
+                        }
+
+                        is InstallDispatchResult.NeedsUnknownSourcesPermission -> {
+                            pendingInstallFile = apkFile
+                            if (currentInfo != null) {
+                                updateDialogState = UpdateDialogState.ReadyToInstall(
+                                    info = currentInfo,
+                                    apkFile = apkFile,
+                                    needsPermission = true
+                                )
+                            }
+                            onUnknownSourcesReturned = {
+                                val file = pendingInstallFile
+                                if (file != null && gitHubUpdater.canInstallPackages()) {
+                                    if (currentInfo != null) {
+                                        updateDialogState = UpdateDialogState.ReadyToInstall(
+                                            info = currentInfo,
+                                            apkFile = file,
+                                            needsPermission = false
+                                        )
+                                    }
+                                    gitHubUpdater.installApk(file)
+                                }
+                            }
+                            runCatching {
+                                unknownSourcesPermissionLauncher.launch(res.settingsIntent)
+                            }.onFailure {
+                                viewModel.postMessage("Please allow \"Install unknown apps\" in Android Settings.")
+                            }
+                        }
+
+                        is InstallDispatchResult.Error -> {
+                            if (currentInfo != null) {
+                                updateDialogState = UpdateDialogState.Error(currentInfo, res.message)
+                            } else {
+                                viewModel.postMessage(res.message)
+                            }
+                        }
+                    }
+                }
+
+                fun triggerUpdateCheck(showUpToDateToast: Boolean) {
+                    if (isCheckingUpdates) return
+                    coroutineScope.launch {
+                        isCheckingUpdates = true
+                        val latest = gitHubUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                        isCheckingUpdates = false
+                        if (latest != null) {
+                            updateDialogState = UpdateDialogState.Available(latest)
+                        } else if (showUpToDateToast) {
+                            viewModel.postMessage("MultiCreator v${BuildConfig.VERSION_NAME} is up to date.")
+                        }
+                    }
+                }
+
+                // Non-blocking GitHub Releases auto-update check on app launch
+                LaunchedEffect(Unit) {
+                    triggerUpdateCheck(showUpToDateToast = false)
+                }
 
                 LaunchedEffect(viewModel) {
                     viewModel.events.collect { event ->
@@ -84,8 +178,62 @@ class MainActivity : ComponentActivity() {
                     onPinWebShortcut = viewModel::pinWebShortcut,
                     onDeleteWebContainer = viewModel::deleteWebContainer,
                     onToggleSsaid = viewModel::toggleSsaidVisibility,
+                    isCheckingUpdates = isCheckingUpdates,
+                    onCheckForUpdates = { triggerUpdateCheck(showUpToDateToast = true) },
                     onPostMessage = viewModel::postMessage,
                     onConsumeMessage = viewModel::consumeMessage
+                )
+
+                UpdateDialog(
+                    state = updateDialogState,
+                    onStartDownload = { info ->
+                        activeDownloadJob?.cancel()
+                        updateDialogState = UpdateDialogState.Downloading(
+                            info = info,
+                            progress = 0f,
+                            bytesDownloaded = 0L,
+                            totalBytes = info.assetSizeBytes
+                        )
+                        activeDownloadJob = coroutineScope.launch {
+                            gitHubUpdater.downloadApk(
+                                downloadUrl = info.downloadUrl,
+                                fileName = info.assetName,
+                                onProgress = { progress, readBytes, totalBytes ->
+                                    updateDialogState = UpdateDialogState.Downloading(
+                                        info = info,
+                                        progress = progress,
+                                        bytesDownloaded = readBytes,
+                                        totalBytes = totalBytes
+                                    )
+                                },
+                                onComplete = { apkFile ->
+                                    updateDialogState = UpdateDialogState.ReadyToInstall(
+                                        info = info,
+                                        apkFile = apkFile,
+                                        needsPermission = !gitHubUpdater.canInstallPackages()
+                                    )
+                                },
+                                onError = { errorMsg ->
+                                    updateDialogState = UpdateDialogState.Error(info, errorMsg)
+                                }
+                            )
+                        }
+                    },
+                    onCancelDownload = {
+                        activeDownloadJob?.cancel()
+                        activeDownloadJob = null
+                        updateDialogState = UpdateDialogState.Hidden
+                        viewModel.postMessage("Update download cancelled.")
+                    },
+                    onInstallApk = { apkFile ->
+                        val info = (updateDialogState as? UpdateDialogState.ReadyToInstall)?.info
+                        dispatchApkInstall(apkFile, info)
+                    },
+                    onDismiss = {
+                        activeDownloadJob?.cancel()
+                        activeDownloadJob = null
+                        updateDialogState = UpdateDialogState.Hidden
+                    }
                 )
             }
         }

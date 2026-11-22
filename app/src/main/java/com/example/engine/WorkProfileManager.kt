@@ -10,6 +10,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import android.media.MediaDrm
 import android.net.Uri
 import android.os.Build
 import android.os.Process
@@ -19,6 +20,7 @@ import android.provider.Settings
 import android.webkit.WebView
 import androidx.core.graphics.toColorInt
 import com.example.data.DpcAdminReceiver
+import java.util.UUID
 
 data class InstalledAppItem(
     val packageName: String,
@@ -41,6 +43,11 @@ data class DeviceHealthSnapshot(
     val deviceModel: String,
     val webViewEngineVersion: String,
     val securityPatchLevel: String,
+    val widevineSecurityLevel: String,
+    val multiProfileWebViewSupported: Boolean,
+    val documentStartShieldSupported: Boolean,
+    val requestedWithStripSupported: Boolean,
+    val activeChromiumProfiles: Int,
     val isolationScore: Int
 )
 
@@ -326,11 +333,16 @@ class WorkProfileManager(private val context: Context) {
             }
         }.getOrNull() ?: "Android System WebView"
 
-        var score = 45
-        if (supportsManaged) score += 15
-        if (workActive) score += 25
-        if (profileOwner) score += 5
-        if (activeWebContainersCount > 0) score += 10
+        val widevineLevel = queryWidevineSecurityLevel()
+        val stealthCaps = WebSandboxManager(context).getWebViewStealthCapabilities()
+
+        var score = 35
+        if (supportsManaged) score += 10
+        if (workActive) score += 20
+        if (stealthCaps.multiProfileSupported) score += 15
+        if (stealthCaps.documentStartScriptSupported) score += 10
+        if (widevineLevel.startsWith("L1")) score += 5
+        if (activeWebContainersCount > 0) score += 5
 
         return DeviceHealthSnapshot(
             currentSsaid = ssaid,
@@ -344,7 +356,55 @@ class WorkProfileManager(private val context: Context) {
             deviceModel = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}",
             webViewEngineVersion = webViewVersion,
             securityPatchLevel = Build.VERSION.SECURITY_PATCH.ifBlank { "Verified" },
+            widevineSecurityLevel = widevineLevel,
+            multiProfileWebViewSupported = stealthCaps.multiProfileSupported,
+            documentStartShieldSupported = stealthCaps.documentStartScriptSupported,
+            requestedWithStripSupported = stealthCaps.requestedWithHeaderControlSupported,
+            activeChromiumProfiles = stealthCaps.activeChromiumProfileCount,
             isolationScore = score.coerceAtMost(100)
         )
+    }
+
+    /**
+     * Queries hardware Widevine DRM security level (L1 = Hardware TEE vs L3 = Software fallback),
+     * a real signal evaluated by streaming and anti-fraud systems alongside Play Integrity.
+     */
+    private fun queryWidevineSecurityLevel(): String {
+        val widevineUuid = UUID(-0x121074568629b532L, -0x5c37d8232ae2de13L)
+        return runCatching {
+            val drm = MediaDrm(widevineUuid)
+            try {
+                val level = drm.getPropertyString("securityLevel").ifBlank { "Unknown" }
+                if (level.equals("L1", ignoreCase = true)) "L1 (Hardware TEE Verified)" else "$level (Software)"
+            } finally {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    drm.close()
+                } else {
+                    @Suppress("DEPRECATION")
+                    drm.release()
+                }
+            }
+        }.getOrDefault("Unavailable")
+    }
+
+    /**
+     * Opens Android's Google Advertising ID (AAID) privacy screen so users can reset or delete
+     * their cross-app Advertising ID in 1 tap when breaking a device-ban loop.
+     */
+    fun openGoogleAdsSettings(): Boolean {
+        val candidates = listOf(
+            Intent("com.google.android.gms.settings.ADS_PRIVACY"),
+            Intent("android.settings.PRIVACY_SETTINGS"),
+            Intent(Settings.ACTION_PRIVACY_SETTINGS)
+        )
+        for (intent in candidates) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val launched = runCatching {
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) return true
+        }
+        return false
     }
 }

@@ -62,15 +62,16 @@ class ShortcutCreator(private val context: Context) {
 
         val badgedBitmap = renderBadgedCloneBitmap(
             sourceBitmap = resolvedBitmap,
-            fallbackInitial = container.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "M"
+            fallbackInitial = container.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "M",
+            slotNumber = container.slotNumber
         )
 
         val launchIntent = ContainerHostActivity.createLaunchIntent(context, container)
-        val shortLabel = "${container.appName} Clone".take(25)
+        val shortLabel = container.displayLabel.take(25)
 
         val shortcutInfo = ShortcutInfo.Builder(context, "mc_clone_${container.id}")
             .setShortLabel(shortLabel)
-            .setLongLabel("${container.appName} (MultiCreator Clone)")
+            .setLongLabel("${container.displayLabel} (MultiCreator)")
             .setIcon(Icon.createWithAdaptiveBitmap(badgedBitmap))
             .setIntent(launchIntent)
             .build()
@@ -139,7 +140,8 @@ class ShortcutCreator(private val context: Context) {
 
     private fun renderBadgedCloneBitmap(
         sourceBitmap: Bitmap?,
-        fallbackInitial: String
+        fallbackInitial: String,
+        slotNumber: Int
     ): Bitmap {
         val size = 192
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -173,7 +175,7 @@ class ShortcutCreator(private val context: Context) {
             canvas.drawText(fallbackInitial, size / 2f, size / 2f + 24f, textPaint)
         }
 
-        // Luminous bottom-right Clone Indicator Badge (Emerald-to-Cyan glow)
+        // Luminous bottom-right Clone Slot Badge (#1, #2, #3...)
         val cx = size - 44f
         val cy = size - 44f
         val outerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF090D16.toInt() }
@@ -192,7 +194,7 @@ class ShortcutCreator(private val context: Context) {
         }
         canvas.drawCircle(cx, cy, 24f, outerRing)
         canvas.drawCircle(cx, cy, 19f, badgeFill)
-        canvas.drawText("2x", cx, cy + 8f, glyphPaint)
+        canvas.drawText("#$slotNumber", cx, cy + 8f, glyphPaint)
 
         return bitmap
     }

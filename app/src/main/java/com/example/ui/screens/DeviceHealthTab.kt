@@ -73,6 +73,7 @@ fun DeviceHealthTab(
     isCheckingUpdates: Boolean,
     onToggleSsaid: () -> Unit,
     onProvisionWorkProfile: () -> Unit,
+    onOpenGoogleAdsSettings: () -> Unit,
     onCopySsaid: (String) -> Unit,
     onCheckForUpdates: () -> Unit,
     modifier: Modifier = Modifier
@@ -249,6 +250,13 @@ fun DeviceHealthTab(
                     )
                     HorizontalDivider(color = GlassBorderSubtle)
                     DiagnosticRow(
+                        icon = Icons.Rounded.Security,
+                        label = "Widevine DRM Hardware Attestation",
+                        value = diagnostics.widevineSecurityLevel,
+                        valueColor = if (diagnostics.widevineSecurityLevel.startsWith("L1")) EmeraldGlow else AmberPulse
+                    )
+                    HorizontalDivider(color = GlassBorderSubtle)
+                    DiagnosticRow(
                         icon = Icons.Rounded.Memory,
                         label = "Device & OS",
                         value = "${diagnostics.deviceModel} • ${diagnostics.androidVersionLabel}",
@@ -257,21 +265,35 @@ fun DeviceHealthTab(
                     HorizontalDivider(color = GlassBorderSubtle)
                     DiagnosticRow(
                         icon = Icons.Rounded.Security,
-                        label = "WebView Engine",
-                        value = diagnostics.webViewEngineVersion,
+                        label = "Chromium WebView Engine",
+                        value = "${diagnostics.webViewEngineVersion} (${diagnostics.activeChromiumProfiles} Profiles)",
                         valueColor = TextSecondary
                     )
 
-                    if (!diagnostics.isWorkProfileActive) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         LiquidPillButton(
-                            text = stringResource(R.string.action_provision_profile),
-                            icon = Icons.Rounded.AdminPanelSettings,
-                            onClick = onProvisionWorkProfile,
+                            text = "Reset Ad ID (AAID)",
+                            icon = Icons.Rounded.Fingerprint,
+                            isPrimary = false,
+                            onClick = onOpenGoogleAdsSettings,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("health_provision_profile_button")
+                                .weight(1f)
+                                .testTag("reset_aaid_button")
                         )
+                        if (!diagnostics.isWorkProfileActive) {
+                            LiquidPillButton(
+                                text = "Work Profile",
+                                icon = Icons.Rounded.AdminPanelSettings,
+                                onClick = onProvisionWorkProfile,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("health_provision_profile_button")
+                            )
+                        }
                     }
                 }
             }
@@ -282,33 +304,42 @@ fun DeviceHealthTab(
             LiquidGlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Anti-Detection Audit",
+                        text = "Anti-Detection Engine Audit",
                         style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary
                     )
                     AuditCheckItem(
-                        passed = diagnostics.isWorkProfileActive,
-                        title = "Separate OS User Handle (/data/user/10/)",
-                        subtitle = if (diagnostics.isWorkProfileActive) {
-                            "Secondary managed user profile detected."
+                        passed = diagnostics.multiProfileWebViewSupported,
+                        title = "Native Chromium Multi-Profile (ProfileStore)",
+                        subtitle = if (diagnostics.multiProfileWebViewSupported) {
+                            "Every clone runs in a separate Chromium profile with isolated cookies, IndexedDB & renderer."
                         } else {
-                            "Initialize Work Profile to enable native app isolation."
+                            "Using encrypted private cookie-jar snapshotting fallback."
                         }
+                    )
+                    AuditCheckItem(
+                        passed = diagnostics.documentStartShieldSupported,
+                        title = "Pre-Execution document_start Fingerprint Shield",
+                        subtitle = "Aligns User-Agent Client Hints, WebGL GPU, AudioContext & Canvas before website scripts run."
+                    )
+                    AuditCheckItem(
+                        passed = diagnostics.requestedWithStripSupported,
+                        title = "X-Requested-With WebView Header Stripping",
+                        subtitle = "Removes host Android package name from outgoing WebView HTTP requests."
                     )
                     AuditCheckItem(
                         passed = true,
                         title = "WebRTC Local IP Leak Blocker",
-                        subtitle = "Active in Web Stealth containers via RTCPeerConnection shield."
+                        subtitle = "Neutralizes RTCPeerConnection network probes inside every cloned container."
                     )
                     AuditCheckItem(
-                        passed = true,
-                        title = "Independent Cookie Jar Snapshots",
-                        subtitle = "Each Web Stealth session persists cookies in an isolated private vault."
-                    )
-                    AuditCheckItem(
-                        passed = true,
-                        title = "Zero APK Repackaging",
-                        subtitle = "Avoids signature mismatch flags from Instagram & YouTube Play Integrity checks."
+                        passed = diagnostics.isWorkProfileActive,
+                        title = "Optional Android Work Profile Partition",
+                        subtitle = if (diagnostics.isWorkProfileActive) {
+                            "Secondary OS user handle (/data/user/10/) detected."
+                        } else {
+                            "Local isolated containers are active; tap Work Profile above for OS-level separation."
+                        }
                     )
                 }
             }

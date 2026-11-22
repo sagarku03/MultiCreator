@@ -27,19 +27,23 @@ data class AppContainer(
     val id: String,
     val packageName: String,
     val appName: String,
+    val slotNumber: Int = 1,
     val clonedAt: Long,
     val virtualSsaid: String,
     val containerPath: String,
     val userAgentMode: UserAgentMode = UserAgentMode.PIXEL_8_PRO,
     val webTargetUrl: String? = null
-)
+) {
+    val displayLabel: String
+        get() = if (slotNumber > 1) "$appName #$slotNumber" else "$appName #1"
+}
 
 /**
  * Instant 1-Click Local Container Engine.
  * Creates isolated per-clone filesystem partitions under:
  *   /data/data/<package>/files/containers/{containerId}/
- * with dedicated SharedPreferences, isolated cookie jars, and cryptographically random
- * virtual SSAIDs to break device-ban loops without root or factory resets.
+ * with dedicated SharedPreferences, native Chromium ProfileStore isolation, isolated cookie jars,
+ * and cryptographically random virtual SSAIDs to break device-ban loops without root or factory resets.
  */
 class ContainerEngine(private val context: Context) {
 
@@ -57,11 +61,15 @@ class ContainerEngine(private val context: Context) {
     /**
      * Instantly provisions an isolated local container directory, dedicated SharedPreferences,
      * cookie vault folder, and unique 16-character virtual SSAID for the specified app.
+     * Supports unlimited multi-slot clones per app (e.g. Instagram #1, #2, #3).
      */
     suspend fun createLocalClone(
         packageName: String,
         appName: String
     ): AppContainer = withContext(Dispatchers.IO) {
+        val existingForPkg = getClonesForPackage(packageName)
+        val nextSlot = (existingForPkg.maxOfOrNull { it.slotNumber } ?: 0) + 1
+
         val containerId = "clone_${UUID.randomUUID().toString().replace("-", "").take(10)}"
         val virtualSsaid = generateVirtualSsaid()
         val now = System.currentTimeMillis()
@@ -73,16 +81,17 @@ class ContainerEngine(private val context: Context) {
         }
 
         val resolvedWebUrl = resolveWebPortalForPackage(packageName)
-        val defaultUa = if (packageName.contains("studio") || packageName.contains("whatsapp")) {
-            UserAgentMode.DESKTOP_CHROME_MAC
-        } else {
-            UserAgentMode.PIXEL_8_PRO
+        val defaultUa = when {
+            packageName.contains("studio") || packageName.contains("whatsapp") -> UserAgentMode.DESKTOP_CHROME_MAC
+            nextSlot % 2 == 0 -> UserAgentMode.GALAXY_S24
+            else -> UserAgentMode.PIXEL_8_PRO
         }
 
         val container = AppContainer(
             id = containerId,
             packageName = packageName,
             appName = appName,
+            slotNumber = nextSlot,
             clonedAt = now,
             virtualSsaid = virtualSsaid,
             containerPath = containerDir.absolutePath,
@@ -95,6 +104,7 @@ class ContainerEngine(private val context: Context) {
             .putString("container_id", containerId)
             .putString("package_name", packageName)
             .putString("app_name", appName)
+            .putInt("slot_number", nextSlot)
             .putString("virtual_ssaid", virtualSsaid)
             .putLong("created_at", now)
             .apply()
@@ -199,6 +209,7 @@ class ContainerEngine(private val context: Context) {
             dir.deleteRecursively()
         }
         context.deleteSharedPreferences("container_prefs_${sanitizeId(containerId)}")
+        WebSandboxManager(context).deleteIsolatedProfile(containerId)
 
         context.localContainerDataStore.edit { prefs ->
             val existing = prefs[clonesKey]?.let(::parseContainers).orEmpty()
@@ -263,6 +274,7 @@ class ContainerEngine(private val context: Context) {
                     put("id", item.id)
                     put("packageName", item.packageName)
                     put("appName", item.appName)
+                    put("slotNumber", item.slotNumber)
                     put("clonedAt", item.clonedAt)
                     put("virtualSsaid", item.virtualSsaid)
                     put("containerPath", item.containerPath)
@@ -293,6 +305,7 @@ class ContainerEngine(private val context: Context) {
                             id = id,
                             packageName = obj.getString("packageName"),
                             appName = obj.getString("appName"),
+                            slotNumber = obj.optInt("slotNumber", 1),
                             clonedAt = obj.optLong("clonedAt", System.currentTimeMillis()),
                             virtualSsaid = obj.optString("virtualSsaid", generateVirtualSsaid()),
                             containerPath = path,

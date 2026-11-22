@@ -420,9 +420,13 @@ private fun WebSandboxScreen(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
-                                val desktop = activeUaMode == UserAgentMode.DESKTOP_CHROME_MAC ||
-                                    activeUaMode == UserAgentMode.DESKTOP_CHROME_WIN
-                                sandboxManager.configureIsolatedWebView(this, activeUaString, desktop)
+                                sandboxManager.attachIsolatedProfileAndShield(
+                                    webView = this,
+                                    containerId = container.id,
+                                    mode = activeUaMode,
+                                    fingerprintSeed = container.fingerprintSeed,
+                                    blockWebRtc = container.blockWebRtc
+                                )
 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -452,7 +456,8 @@ private fun WebSandboxScreen(
                                         view?.evaluateJavascript(
                                             sandboxManager.buildAntiDetectShieldScript(
                                                 container.fingerprintSeed,
-                                                container.blockWebRtc
+                                                container.blockWebRtc,
+                                                activeUaMode
                                             ),
                                             null
                                         )
@@ -465,7 +470,8 @@ private fun WebSandboxScreen(
                                         view?.evaluateJavascript(
                                             sandboxManager.buildAntiDetectShieldScript(
                                                 container.fingerprintSeed,
-                                                container.blockWebRtc
+                                                container.blockWebRtc,
+                                                activeUaMode
                                             ),
                                             null
                                         )

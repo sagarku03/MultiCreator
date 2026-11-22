@@ -53,6 +53,7 @@ data class MultiCreatorUiState(
     val filteredApps: List<InstalledAppItem> = emptyList(),
     val localClones: List<AppContainer> = emptyList(),
     val clonesByPackage: Map<String, AppContainer> = emptyMap(),
+    val clonesByPackageList: Map<String, List<AppContainer>> = emptyMap(),
     val searchQuery: String = "",
     val appFilterMode: AppFilterMode = AppFilterMode.ALL,
     val isWorkProfileActive: Boolean = false,
@@ -94,17 +95,21 @@ class MultiCreatorViewModel(
     private fun observeLocalClones() {
         viewModelScope.launch {
             containerEngine.containersFlow.collect { clones ->
-                val byPackage = clones.associateBy { it.packageName }
+                val grouped = clones
+                    .groupBy { it.packageName }
+                    .mapValues { (_, list) -> list.sortedBy { it.slotNumber } }
+                val primaryByPackage = grouped.mapValues { (_, list) -> list.last() }
                 _uiState.update { state ->
-                    val mergedApps = sortAppsWithClones(state.installedApps, byPackage)
-                    val filtered = applyAppFilter(mergedApps, byPackage, state.searchQuery, state.appFilterMode)
+                    val mergedApps = sortAppsWithClones(state.installedApps, primaryByPackage)
+                    val filtered = applyAppFilter(mergedApps, primaryByPackage, state.searchQuery, state.appFilterMode)
                     state.copy(
                         localClones = clones,
-                        clonesByPackage = byPackage,
+                        clonesByPackage = primaryByPackage,
+                        clonesByPackageList = grouped,
                         installedApps = mergedApps,
                         filteredApps = filtered,
                         clonedCount = clones.size + mergedApps.count {
-                            it.isClonedInWorkProfile && it.packageName !in byPackage
+                            it.isClonedInWorkProfile && it.packageName !in primaryByPackage
                         }
                     )
                 }
@@ -235,19 +240,49 @@ class MultiCreatorViewModel(
                 appName = app.appName
             )
             postMessage(
-                "Cloned ${app.appName} • Isolated SSAID ${created.virtualSsaid.take(8)} ready."
+                "Created ${created.displayLabel} • Isolated SSAID ${created.virtualSsaid.take(8)} ready."
             )
         }
     }
 
     /**
-     * Wipes a cloned app's isolated filesystem directory and virtual identity.
+     * Spins up an additional isolated clone slot for an already-cloned app (e.g. Instagram #2, #3).
+     */
+    fun createAdditionalSlot(app: InstalledAppItem) {
+        viewModelScope.launch {
+            val created = containerEngine.createLocalClone(
+                packageName = app.packageName,
+                appName = app.appName
+            )
+            postMessage(
+                "Added ${created.displayLabel} • Fresh Chromium Profile & SSAID ${created.virtualSsaid.take(8)}."
+            )
+        }
+    }
+
+    fun launchSpecificClone(container: AppContainer) {
+        _events.tryEmit(MultiCreatorEvent.LaunchContainer(container))
+    }
+
+    fun deleteSpecificClone(container: AppContainer) {
+        viewModelScope.launch {
+            containerEngine.deleteClone(container.id)
+            postMessage("Purged ${container.displayLabel} isolated profile & container storage.")
+        }
+    }
+
+    /**
+     * Wipes the most recent cloned slot for this app.
      */
     fun deleteLocalClone(app: InstalledAppItem) {
         val existing = _uiState.value.clonesByPackage[app.packageName] ?: return
-        viewModelScope.launch {
-            containerEngine.deleteClone(existing.id)
-            postMessage("Removed isolated clone and wiped container data for ${app.appName}.")
+        deleteSpecificClone(existing)
+    }
+
+    fun openGoogleAdsPrivacySettings() {
+        val opened = workProfileManager.openGoogleAdsSettings()
+        if (!opened) {
+            postMessage("Open Android Settings → Privacy → Ads to reset your Advertising ID.")
         }
     }
 

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddToHomeScreen
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -107,6 +108,8 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onProvisionWorkProfile: () -> Unit,
     onCloneOrLaunchApp: (InstalledAppItem) -> Unit,
+    onCreateAdditionalSlot: (InstalledAppItem) -> Unit,
+    onLaunchSpecificClone: (AppContainer) -> Unit,
     onDeleteLocalClone: (InstalledAppItem) -> Unit,
     onPinAppShortcut: (InstalledAppItem) -> Unit,
     onLaunchWebContainer: (WebContainerProfile) -> Unit,
@@ -115,6 +118,7 @@ fun HomeScreen(
     onPinWebShortcut: (WebContainerProfile) -> Unit,
     onDeleteWebContainer: (WebContainerProfile) -> Unit,
     onToggleSsaid: () -> Unit,
+    onOpenGoogleAdsSettings: () -> Unit,
     isCheckingUpdates: Boolean,
     onCheckForUpdates: () -> Unit,
     onPostMessage: (String) -> Unit,
@@ -193,6 +197,14 @@ fun HomeScreen(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onCloneOrLaunchApp(app)
                             },
+                            onCreateAdditionalSlot = { app ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCreateAdditionalSlot(app)
+                            },
+                            onLaunchSpecificClone = { container ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onLaunchSpecificClone(container)
+                            },
                             onDeleteLocalClone = { app ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onDeleteLocalClone(app)
@@ -222,6 +234,10 @@ fun HomeScreen(
                             onProvisionWorkProfile = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onProvisionWorkProfile()
+                            },
+                            onOpenGoogleAdsSettings = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onOpenGoogleAdsSettings()
                             },
                             onCopySsaid = onPostMessage,
                             onCheckForUpdates = {
@@ -337,6 +353,8 @@ private fun AppClonerTab(
     onSearchQueryChange: (String) -> Unit,
     onFilterModeChange: (AppFilterMode) -> Unit,
     onCloneOrLaunchApp: (InstalledAppItem) -> Unit,
+    onCreateAdditionalSlot: (InstalledAppItem) -> Unit,
+    onLaunchSpecificClone: (AppContainer) -> Unit,
     onDeleteLocalClone: (InstalledAppItem) -> Unit,
     onPinAppShortcut: (InstalledAppItem) -> Unit
 ) {
@@ -437,11 +455,13 @@ private fun AppClonerTab(
                     items = uiState.filteredApps,
                     key = { it.packageName }
                 ) { app ->
-                    val localClone = uiState.clonesByPackage[app.packageName]
+                    val cloneSlots = uiState.clonesByPackageList[app.packageName].orEmpty()
                     InstalledAppGlassCard(
                         app = app,
-                        localClone = localClone,
+                        cloneSlots = cloneSlots,
                         onCloneOrLaunch = { onCloneOrLaunchApp(app) },
+                        onAddAnotherSlot = { onCreateAdditionalSlot(app) },
+                        onLaunchSlot = onLaunchSpecificClone,
                         onDeleteClone = { onDeleteLocalClone(app) },
                         onPinShortcut = { onPinAppShortcut(app) }
                     )
@@ -583,12 +603,15 @@ private fun AppFilterChipsRow(
 @Composable
 private fun InstalledAppGlassCard(
     app: InstalledAppItem,
-    localClone: AppContainer?,
+    cloneSlots: List<AppContainer>,
     onCloneOrLaunch: () -> Unit,
+    onAddAnotherSlot: () -> Unit,
+    onLaunchSlot: (AppContainer) -> Unit,
     onDeleteClone: () -> Unit,
     onPinShortcut: () -> Unit
 ) {
-    val isCloned = localClone != null || app.isClonedInWorkProfile
+    val latestClone = cloneSlots.lastOrNull()
+    val isCloned = cloneSlots.isNotEmpty() || app.isClonedInWorkProfile
 
     LiquidGlassCard(
         modifier = Modifier
@@ -597,7 +620,7 @@ private fun InstalledAppGlassCard(
         highlightAccent = if (isCloned) EmeraldGlow else null,
         contentPadding = PaddingValues(14.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -624,7 +647,11 @@ private fun InstalledAppGlassCard(
                         )
                         if (isCloned) {
                             GlassBadge(
-                                label = stringResource(R.string.status_active_clone),
+                                label = if (cloneSlots.size > 1) {
+                                    "${cloneSlots.size} Clones"
+                                } else {
+                                    stringResource(R.string.status_active_clone)
+                                },
                                 color = EmeraldGlow,
                                 pulsingDot = true
                             )
@@ -637,28 +664,68 @@ private fun InstalledAppGlassCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    val metaLine = if (localClone != null) {
-                        "v${app.versionName} • SSAID ${localClone.virtualSsaid.take(8)}"
+                    val metaLine = if (latestClone != null) {
+                        "v${app.versionName} • SSAID ${latestClone.virtualSsaid.take(8)}"
                     } else {
                         "v${app.versionName} • ${if (app.isSystemApp) "System" else "User"}"
                     }
                     Text(
                         text = metaLine,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = if (localClone != null) JetBrainsMonoFontFamily else MaterialTheme.typography.bodySmall.fontFamily
+                            fontFamily = if (latestClone != null) JetBrainsMonoFontFamily else MaterialTheme.typography.bodySmall.fontFamily
                         ),
-                        color = if (localClone != null) NeonCyanBright else TextSecondary.copy(alpha = 0.75f)
+                        color = if (latestClone != null) NeonCyanBright else TextSecondary.copy(alpha = 0.75f)
                     )
                 }
 
-                if (localClone != null) {
-                    GlassIconButton(
-                        icon = Icons.Rounded.DeleteOutline,
-                        contentDescription = "Delete clone for ${app.appName}",
-                        tint = RoseAlert,
-                        onClick = onDeleteClone,
-                        modifier = Modifier.testTag("delete_clone_${app.packageName}")
-                    )
+                if (latestClone != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        GlassIconButton(
+                            icon = Icons.Rounded.Add,
+                            contentDescription = "Add another clone slot for ${app.appName}",
+                            tint = NeonCyanBright,
+                            accentGlow = NeonCyan,
+                            onClick = onAddAnotherSlot,
+                            modifier = Modifier.testTag("add_slot_${app.packageName}")
+                        )
+                        GlassIconButton(
+                            icon = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Delete clone for ${app.appName}",
+                            tint = RoseAlert,
+                            onClick = onDeleteClone,
+                            modifier = Modifier.testTag("delete_clone_${app.packageName}")
+                        )
+                    }
+                }
+            }
+
+            // Multi-Slot Clone Switcher Chips (when 1+ isolated clones exist for this app)
+            if (cloneSlots.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    cloneSlots.forEach { slot ->
+                        val chipShape = RoundedCornerShape(50.dp)
+                        Box(
+                            modifier = Modifier
+                                .clip(chipShape)
+                                .background(EmeraldGlow.copy(alpha = 0.14f))
+                                .border(1.dp, EmeraldGlow.copy(alpha = 0.45f), chipShape)
+                                .clickable { onLaunchSlot(slot) }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = "#${slot.slotNumber} • ${slot.virtualSsaid.take(6)}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFontFamily
+                                ),
+                                color = EmeraldGlow
+                            )
+                        }
+                    }
                 }
             }
 

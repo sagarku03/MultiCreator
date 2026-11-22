@@ -181,6 +181,10 @@ class ContainerHostActivity : ComponentActivity() {
     }
 
     private fun restoreCookiesFromContainerFile(containerId: String, onReady: () -> Unit) {
+        if (sandboxManager.isMultiProfileSupported()) {
+            onReady()
+            return
+        }
         val cookieManager = CookieManager.getInstance()
         cookieManager.removeAllCookies {
             val jarFile = containerEngine.getCookieJarFile(containerId)
@@ -204,6 +208,10 @@ class ContainerHostActivity : ComponentActivity() {
     }
 
     private fun persistCookiesToContainerFile(containerId: String) {
+        if (sandboxManager.isMultiProfileSupported()) {
+            sandboxManager.persistContainerCookieJar(containerId, visitedOrigins)
+            return
+        }
         val cookieManager = CookieManager.getInstance()
         cookieManager.flush()
         val jarFile: File = containerEngine.getCookieJarFile(containerId)
@@ -379,7 +387,7 @@ private fun ContainerHostScreen(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = active?.appName ?: "Cloned Space",
+                            text = active?.displayLabel ?: "Cloned Space",
                             style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary,
                             maxLines = 1,
@@ -396,7 +404,11 @@ private fun ContainerHostScreen(
                             )
                             if (activeWebUrl != null && active != null) {
                                 GlassBadge(
-                                    label = active.userAgentMode.badgeLabel,
+                                    label = if (sandboxManager.isMultiProfileSupported()) {
+                                        "Profile • ${active.userAgentMode.badgeLabel}"
+                                    } else {
+                                        active.userAgentMode.badgeLabel
+                                    },
                                     color = NeonCyanBright
                                 )
                             }
@@ -486,15 +498,10 @@ private fun ContainerHostScreen(
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             scope.launch {
                                 containerEngine.clearContainerCache(active.id)
-                                webViewRef?.clearCache(true)
-                                webViewRef?.clearHistory()
-                                webViewRef?.clearFormData()
-                                runCatching { WebStorage.getInstance().deleteAllData() }
-                                CookieManager.getInstance().removeAllCookies {
-                                    CookieManager.getInstance().flush()
+                                sandboxManager.clearContainerSession(active.id, webViewRef) {
                                     activeWebUrl?.let { webViewRef?.loadUrl(it) }
                                 }
-                                snackbarHostState.showSnackbar("Cleared isolated container cache & cookie vault.")
+                                snackbarHostState.showSnackbar("Cleared isolated Chromium profile cache & cookie vault.")
                             }
                         },
                         modifier = Modifier.testTag("container_clear_cache_button")
@@ -525,13 +532,13 @@ private fun ContainerHostScreen(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
-                                val ua = sandboxManager.resolveUserAgent(
-                                    active.userAgentMode,
-                                    active.virtualSsaid
+                                sandboxManager.attachIsolatedProfileAndShield(
+                                    webView = this,
+                                    containerId = active.id,
+                                    mode = active.userAgentMode,
+                                    fingerprintSeed = active.virtualSsaid,
+                                    blockWebRtc = true
                                 )
-                                val desktop = active.userAgentMode == UserAgentMode.DESKTOP_CHROME_MAC ||
-                                    active.userAgentMode == UserAgentMode.DESKTOP_CHROME_WIN
-                                sandboxManager.configureIsolatedWebView(this, ua, desktop)
 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -557,8 +564,9 @@ private fun ContainerHostScreen(
                                         canGoBack = view?.canGoBack() == true
                                         canGoForward = view?.canGoForward() == true
                                         val seed = container?.virtualSsaid ?: active.virtualSsaid
+                                        val uaMode = container?.userAgentMode ?: active.userAgentMode
                                         view?.evaluateJavascript(
-                                            sandboxManager.buildAntiDetectShieldScript(seed, true),
+                                            sandboxManager.buildAntiDetectShieldScript(seed, true, uaMode),
                                             null
                                         )
                                     }
@@ -568,8 +576,9 @@ private fun ContainerHostScreen(
                                         canGoBack = view?.canGoBack() == true
                                         canGoForward = view?.canGoForward() == true
                                         val seed = container?.virtualSsaid ?: active.virtualSsaid
+                                        val uaMode = container?.userAgentMode ?: active.userAgentMode
                                         view?.evaluateJavascript(
-                                            sandboxManager.buildAntiDetectShieldScript(seed, true),
+                                            sandboxManager.buildAntiDetectShieldScript(seed, true, uaMode),
                                             null
                                         )
                                         onSaveCookies(active.id)

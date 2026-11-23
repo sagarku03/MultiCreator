@@ -4,11 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.net.Uri
 import android.os.Bundle
 import android.webkit.CookieManager
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
-import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -16,6 +17,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -132,6 +134,15 @@ class ContainerHostActivity : ComponentActivity() {
     private lateinit var sandboxManager: WebSandboxManager
     private val visitedOrigins = linkedSetOf<String>()
     private var activeContainerId: String = ""
+    private var pendingFileUploadCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileUploadLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        val callback = pendingFileUploadCallback
+        pendingFileUploadCallback = null
+        callback?.onReceiveValue(if (uris.isNullOrEmpty()) null else uris.toTypedArray())
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -159,6 +170,19 @@ class ContainerHostActivity : ComponentActivity() {
                     onTrackOrigin = { origin -> visitedOrigins.add(origin) },
                     onSaveCookies = { cid -> persistCookiesToContainerFile(cid) },
                     onRestoreCookies = { cid, onReady -> restoreCookiesFromContainerFile(cid, onReady) },
+                    onOpenFileChooser = { callback, mimeTypes ->
+                        pendingFileUploadCallback?.onReceiveValue(null)
+                        pendingFileUploadCallback = callback
+                        val accepted = mimeTypes.filter { it.isNotBlank() }.ifEmpty { listOf("*/*") }
+                        runCatching {
+                            fileUploadLauncher.launch(accepted.toTypedArray())
+                            true
+                        }.getOrElse {
+                            pendingFileUploadCallback = null
+                            callback.onReceiveValue(null)
+                            false
+                        }
+                    },
                     onLaunchWorkClone = { pkg -> launchRealWorkProfileClone(pkg) },
                     onExit = { finish() }
                 )
@@ -277,6 +301,7 @@ private fun ContainerHostScreen(
     onTrackOrigin: (String) -> Unit,
     onSaveCookies: (String) -> Unit,
     onRestoreCookies: (String, () -> Unit) -> Unit,
+    onOpenFileChooser: (ValueCallback<Array<Uri>>, List<String>) -> Boolean,
     onLaunchWorkClone: (String) -> Boolean,
     onExit: () -> Unit
 ) {
@@ -438,11 +463,13 @@ private fun ContainerHostScreen(
                                                     userAgentMode = mode
                                                 ) ?: active.copy(userAgentMode = mode)
                                                 container = updated
-                                                val ua = sandboxManager.resolveUserAgent(mode, updated.virtualSsaid)
-                                                val desktop = mode == UserAgentMode.DESKTOP_CHROME_MAC ||
-                                                    mode == UserAgentMode.DESKTOP_CHROME_WIN
                                                 webViewRef?.let { wv ->
-                                                    sandboxManager.configureIsolatedWebView(wv, ua, desktop)
+                                                    sandboxManager.reapplyUserAgentForContainer(
+                                                        webView = wv,
+                                                        containerId = updated.id,
+                                                        mode = mode,
+                                                        fingerprintSeed = updated.virtualSsaid
+                                                    )
                                                     wv.reload()
                                                 }
                                                 snackbarHostState.showSnackbar("User-Agent switched to ${mode.displayName}")
@@ -467,11 +494,13 @@ private fun ContainerHostScreen(
                                 val rotated = containerEngine.rotateContainerIdentity(active.id)
                                     ?: active.copy(virtualSsaid = ContainerEngine.generateVirtualSsaid())
                                 container = rotated
-                                val ua = sandboxManager.resolveUserAgent(rotated.userAgentMode, rotated.virtualSsaid)
-                                val desktop = rotated.userAgentMode == UserAgentMode.DESKTOP_CHROME_MAC ||
-                                    rotated.userAgentMode == UserAgentMode.DESKTOP_CHROME_WIN
                                 webViewRef?.let { wv ->
-                                    sandboxManager.configureIsolatedWebView(wv, ua, desktop)
+                                    sandboxManager.reapplyUserAgentForContainer(
+                                        webView = wv,
+                                        containerId = rotated.id,
+                                        mode = rotated.userAgentMode,
+                                        fingerprintSeed = rotated.virtualSsaid
+                                    )
                                     wv.reload()
                                 }
                                 snackbarHostState.showSnackbar("Identity rotated • New SSAID ${rotated.virtualSsaid.take(8)}")
@@ -535,6 +564,16 @@ private fun ContainerHostScreen(
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                         loadProgress = newProgress
+                                    }
+
+                                    override fun onShowFileChooser(
+                                        webView: WebView?,
+                                        filePathCallback: ValueCallback<Array<Uri>>?,
+                                        fileChooserParams: FileChooserParams?
+                                    ): Boolean {
+                                        if (filePathCallback == null) return false
+                                        val mimes = fileChooserParams?.acceptTypes?.toList().orEmpty()
+                                        return onOpenFileChooser(filePathCallback, mimes)
                                     }
                                 }
 

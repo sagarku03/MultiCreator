@@ -47,6 +47,8 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.WarningAmber
+import android.os.Build
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -115,6 +117,9 @@ fun HomeScreen(
     onProvisionWorkProfile: () -> Unit,
     onSyncWorkBridge: () -> Unit,
     onDismissWorkSetupDialog: () -> Unit,
+    onDismissWorkVaultTroubleshooter: () -> Unit,
+    onOpenAccountsSettings: () -> Unit,
+    onOpenSecuritySettings: () -> Unit,
     onCloneOrLaunchNativeApp: (InstalledAppItem) -> Unit,
     onOpenOrCreateWebClone: (InstalledAppItem) -> Unit,
     onCreateAdditionalSlot: (InstalledAppItem) -> Unit,
@@ -311,6 +316,16 @@ fun HomeScreen(
                     onOpenOrCreateWebClone(targetApp)
                 },
                 onDismiss = onDismissWorkSetupDialog
+            )
+        }
+
+        // OEM-Aware Work Vault Troubleshooter if Android blocked/cancelled Managed Profile creation
+        if (uiState.showWorkVaultTroubleshooter) {
+            WorkVaultTroubleshooterDialog(
+                onOpenAccountsSettings = onOpenAccountsSettings,
+                onOpenSecuritySettings = onOpenSecuritySettings,
+                onRetrySetup = onProvisionWorkProfile,
+                onDismiss = onDismissWorkVaultTroubleshooter
             )
         }
     }
@@ -997,6 +1012,105 @@ private fun WorkVaultSetupDialog(
 
                     LiquidPillButton(
                         text = "Cancel",
+                        isPrimary = false,
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkVaultTroubleshooterDialog(
+    onOpenAccountsSettings: () -> Unit,
+    onOpenSecuritySettings: () -> Unit,
+    onRetrySetup: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val manufacturer = remember { Build.MANUFACTURER.lowercase() }
+    val oemHint = remember(manufacturer) {
+        when {
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") ->
+                "MIUI / HyperOS detected: Built-in 'Dual Apps' creates a hidden User 999 that blocks Android Work Profiles. Delete Dual Apps in Settings → Apps → Dual Apps → Settings icon → Delete Dual apps' accounts, then retry."
+            manufacturer.contains("samsung") ->
+                "Samsung One UI detected: Remove any existing Work Profile or Secure Folder conflict in Settings → Accounts and backup → Manage accounts, then retry."
+            manufacturer.contains("oneplus") || manufacturer.contains("oppo") || manufacturer.contains("realme") ->
+                "ColorOS / OxygenOS / Realme UI detected: Turn off built-in 'App Cloner' apps first, as they occupy Android's managed user slot."
+            else ->
+                "Android allows only 1 Managed Work Profile per device. Remove any old/ghost Work Profile in Settings → Passwords & accounts, or temporarily set Screen Lock to None/Swipe if setup crashed."
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            LiquidGlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                highlightAccent = AmberPulse,
+                contentPadding = PaddingValues(22.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.WarningAmber,
+                            contentDescription = null,
+                            tint = AmberPulse,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = "Work Vault Setup Blocked by OS",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Text(
+                        text = oemHint,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary
+                    )
+
+                    Text(
+                        text = "Tip: While fixing OS Work Profile, you can still tap 'Web Clone' on Instagram, YouTube, WhatsApp, X, TikTok & more for instant multi-account isolation with zero OS setup.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    LiquidPillButton(
+                        text = "1. Open Accounts & Work Settings",
+                        isPrimary = false,
+                        onClick = onOpenAccountsSettings,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    LiquidPillButton(
+                        text = "2. Open Screen Lock / Security",
+                        isPrimary = false,
+                        onClick = onOpenSecuritySettings,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    LiquidPillButton(
+                        text = "Retry Work Vault Setup",
+                        icon = Icons.Rounded.AdminPanelSettings,
+                        accentColors = listOf(NeonCyan, CyberViolet),
+                        onClick = onRetrySetup,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    LiquidPillButton(
+                        text = "Close",
                         isPrimary = false,
                         onClick = onDismiss,
                         modifier = Modifier.fillMaxWidth()

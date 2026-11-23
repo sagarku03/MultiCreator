@@ -64,6 +64,7 @@ data class MultiCreatorUiState(
     val supportsManagedProfiles: Boolean = true,
     val cloningPackageName: String? = null,
     val pendingWorkSetupApp: InstalledAppItem? = null,
+    val showWorkVaultTroubleshooter: Boolean = false,
     val nativeWorkClonedCount: Int = 0,
     val clonedCount: Int = 0,
     val webContainers: List<WebContainerProfile> = emptyList(),
@@ -225,8 +226,29 @@ class MultiCreatorViewModel(
         _uiState.update { it.copy(pendingWorkSetupApp = null) }
     }
 
+    fun dismissWorkVaultTroubleshooter() {
+        _uiState.update { it.copy(showWorkVaultTroubleshooter = false) }
+    }
+
+    fun openAndroidAccountsSettings() {
+        if (!workProfileManager.openAndroidAccountsSettings()) {
+            postMessage("Open Android Settings → Passwords & accounts to inspect Work Profiles.")
+        }
+    }
+
+    fun openAndroidSecuritySettings() {
+        if (!workProfileManager.openAndroidSecuritySettings()) {
+            postMessage("Open Android Settings → Security & privacy → Screen lock.")
+        }
+    }
+
     fun requestWorkProfileProvisioning() {
-        _uiState.update { it.copy(pendingWorkSetupApp = null) }
+        _uiState.update {
+            it.copy(
+                pendingWorkSetupApp = null,
+                showWorkVaultTroubleshooter = false
+            )
+        }
         if (!workProfileManager.isManagedProfileSupported()) {
             postMessage("Android Managed Work Profiles are not supported by this ROM.")
             return
@@ -246,9 +268,15 @@ class MultiCreatorViewModel(
 
     fun onProvisioningResult(success: Boolean) {
         if (success) {
+            _uiState.update { it.copy(showWorkVaultTroubleshooter = false) }
             postMessage("Work Vault (/data/user/10/) activated with a fresh SSAID! You can now clone native apps.")
         } else {
-            postMessage("Work Vault setup was cancelled or not completed.")
+            val alreadyActive = workProfileManager.checkIfWorkProfileActive()
+            if (!alreadyActive) {
+                _uiState.update { it.copy(showWorkVaultTroubleshooter = true) }
+            } else {
+                postMessage("Work Vault detected! Refreshing installed apps…")
+            }
         }
         refreshEcosystem()
     }

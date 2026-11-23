@@ -2,13 +2,18 @@ package com.example.dpc
 
 import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -23,13 +28,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Launch
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,13 +47,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.data.DpcAdminReceiver
 import com.example.ui.theme.CyberGlassBackground
 import com.example.ui.theme.EmeraldGlow
+import com.example.ui.theme.GlassSurfaceFill
 import com.example.ui.theme.LiquidGlassCard
 import com.example.ui.theme.LiquidPillButton
 import com.example.ui.theme.MultiCreatorTheme
@@ -56,19 +68,41 @@ import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 
 private sealed class CloneInstallUiState {
-    data class Installing(val appName: String, val detail: String) : CloneInstallUiState()
-    data class Success(val appName: String, val packageName: String, val detail: String) : CloneInstallUiState()
+    data class Installing(
+        val appName: String,
+        val detail: String,
+        val progress: Float? = null
+    ) : CloneInstallUiState()
+
+    data class Success(
+        val appName: String,
+        val packageName: String,
+        val detail: String
+    ) : CloneInstallUiState()
+
     data class Uninstalled(val appName: String) : CloneInstallUiState()
-    data class Error(val appName: String, val message: String) : CloneInstallUiState()
+
+    data class NeedsInstallPermission(
+        val appName: String,
+        val message: String
+    ) : CloneInstallUiState()
+
+    data class Error(
+        val appName: String,
+        val message: String
+    ) : CloneInstallUiState()
 }
 
 /**
  * Executes EXCLUSIVELY inside the Managed Work Profile (/data/user/10/) as the Profile Owner.
- * Receives cross-profile clone/uninstall requests from the Personal Profile MultiCreator app
- * and installs the genuine, unmodified base + split APKs into User 10 via PackageInstaller
- * or DevicePolicyManager.enableSystemApp() / installExistingPackage().
+ * Uses 3-layer APK reading (Direct `/data/app` -> Kernel Binder `ParcelFileDescriptor` -> `FileProvider` URI)
+ * and commits into Android's native `PackageInstaller` with an explicit `BroadcastReceiver` callback
+ * (Android 14/15 BAL-safe and FLAG_MUTABLE compliant) + live `SessionCallback` progress tracking.
  */
 class WorkCloneInstallerActivity : ComponentActivity() {
 
@@ -78,6 +112,46 @@ class WorkCloneInstallerActivity : ComponentActivity() {
 
     private var activeTargetPackage: String = ""
     private var activeTargetAppName: String = "App"
+    private var lastCloneIntent: Intent? = null
+    private var activeSessionId: Int = -1
+    private var isReceiverRegistered = false
+
+    private val sessionCallback = object : PackageInstaller.SessionCallback() {
+        override fun onCreated(sessionId: Int) = Unit
+        override fun onBadgingChanged(sessionId: Int) = Unit
+        override fun onActiveChanged(sessionId: Int, active: Boolean) = Unit
+        override fun onProgressChanged(sessionId: Int, progress: Float) {
+            if (sessionId == activeSessionId) {
+                val current = uiState
+                if (current is CloneInstallUiState.Installing) {
+                    uiState = current.copy(
+                        progress = progress.coerceIn(0f, 1f),
+                        detail = "Installing unmodified APK into /data/user/10/ (${(progress * 100).toInt()}%)…"
+                    )
+                }
+            }
+        }
+
+        override fun onFinished(sessionId: Int, success: Boolean) {
+            if (sessionId == activeSessionId && success && activeTargetPackage.isNotBlank()) {
+                uiState = CloneInstallUiState.Success(
+                    appName = activeTargetAppName,
+                    packageName = activeTargetPackage,
+                    detail = "Genuine $activeTargetAppName cloned into /data/user/10/ with a brand-new SSAID & clean storage!"
+                )
+            }
+        }
+    }
+
+    private val installResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+            when (intent.action) {
+                installCallbackAction() -> handlePackageInstallerCallback(intent)
+                uninstallCallbackAction() -> handleUninstallCallback(intent)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -86,8 +160,11 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
 
-        // Ensure cross-profile filters stay healthy inside User 10
+        // Ensure cross-profile filters & install permissions stay enabled inside User 10
         WorkCloneBridge.configureWorkProfilePolicies(applicationContext)
+
+        registerInstallReceiver()
+        runCatching { packageManager.packageInstaller.registerSessionCallback(sessionCallback) }
 
         setContent {
             MultiCreatorTheme {
@@ -103,6 +180,16 @@ class WorkCloneInstallerActivity : ComponentActivity() {
                             finish()
                         }
                     },
+                    onOpenUnknownSourcesSettings = {
+                        val settingsIntent = Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:$packageName")
+                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        runCatching { startActivity(settingsIntent) }
+                    },
+                    onRetryClone = {
+                        lastCloneIntent?.let(::handleIntentCommand)
+                    },
                     onDone = { finish() }
                 )
             }
@@ -117,6 +204,33 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         handleIntentCommand(intent)
     }
 
+    override fun onDestroy() {
+        runCatching { packageManager.packageInstaller.unregisterSessionCallback(sessionCallback) }
+        if (isReceiverRegistered) {
+            runCatching { unregisterReceiver(installResultReceiver) }
+            isReceiverRegistered = false
+        }
+        super.onDestroy()
+    }
+
+    private fun installCallbackAction(): String = "$packageName.WORK_INSTALL_SESSION_RESULT"
+    private fun uninstallCallbackAction(): String = "$packageName.WORK_UNINSTALL_SESSION_RESULT"
+
+    private fun registerInstallReceiver() {
+        if (isReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(installCallbackAction())
+            addAction(uninstallCallbackAction())
+        }
+        ContextCompat.registerReceiver(
+            this,
+            installResultReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        isReceiverRegistered = true
+    }
+
     private fun handleIntentCommand(incoming: Intent?) {
         if (incoming == null) {
             finish()
@@ -124,8 +238,6 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         }
 
         when (incoming.action) {
-            ACTION_INSTALL_SESSION_RESULT -> handlePackageInstallerCallback(incoming)
-            ACTION_UNINSTALL_SESSION_RESULT -> handleUninstallCallback(incoming)
             WorkCloneBridge.ACTION_WORK_UNINSTALL_APK -> {
                 val pkg = incoming.getStringExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE).orEmpty()
                 val appName = incoming.getStringExtra(WorkCloneBridge.EXTRA_TARGET_APP_NAME) ?: pkg
@@ -139,6 +251,7 @@ class WorkCloneInstallerActivity : ComponentActivity() {
             }
 
             WorkCloneBridge.ACTION_WORK_CLONE_APK -> {
+                lastCloneIntent = incoming
                 val pkg = incoming.getStringExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE).orEmpty()
                 val appName = incoming.getStringExtra(WorkCloneBridge.EXTRA_TARGET_APP_NAME) ?: pkg
                 val isSystemApp = incoming.getBooleanExtra(WorkCloneBridge.EXTRA_IS_SYSTEM_APP, false)
@@ -150,7 +263,10 @@ class WorkCloneInstallerActivity : ComponentActivity() {
                     return
                 }
 
-                // Collect URIs from ClipData first (carries cross-profile read permission), then fallback extra
+                val apkPaths = incoming.getStringArrayListExtra(WorkCloneBridge.EXTRA_APK_PATHS).orEmpty()
+                val binderBundle = incoming.getBundleExtra(WorkCloneBridge.EXTRA_APK_BINDER_BUNDLE)
+                val remoteFdBinder = binderBundle?.getBinder(WorkCloneBridge.KEY_APK_FD_BINDER)
+
                 val apkUris = linkedSetOf<Uri>()
                 incoming.clipData?.let { clip ->
                     for (i in 0 until clip.itemCount) {
@@ -163,7 +279,14 @@ class WorkCloneInstallerActivity : ComponentActivity() {
                     Uri::class.java
                 )?.let(apkUris::addAll)
 
-                performNativeWorkProfileInstall(pkg, appName, isSystemApp, apkUris.toList())
+                performNativeWorkProfileInstall(
+                    packageName = pkg,
+                    appName = appName,
+                    isSystemApp = isSystemApp,
+                    apkPaths = apkPaths,
+                    remoteFdBinder = remoteFdBinder,
+                    apkUris = apkUris.toList()
+                )
             }
 
             else -> finish()
@@ -174,6 +297,8 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         packageName: String,
         appName: String,
         isSystemApp: Boolean,
+        apkPaths: List<String>,
+        remoteFdBinder: IBinder?,
         apkUris: List<Uri>
     ) {
         lifecycleScope.launch {
@@ -183,8 +308,7 @@ class WorkCloneInstallerActivity : ComponentActivity() {
             )
 
             // 1. Check if already installed inside this Work Profile
-            val existingLaunch = packageManager.getLaunchIntentForPackage(packageName)
-            if (existingLaunch != null) {
+            if (packageManager.getLaunchIntentForPackage(packageName) != null) {
                 uiState = CloneInstallUiState.Success(
                     appName = appName,
                     packageName = packageName,
@@ -197,7 +321,7 @@ class WorkCloneInstallerActivity : ComponentActivity() {
             val admin = DpcAdminReceiver.getComponentName(applicationContext)
             val isProfileOwner = dpm?.isProfileOwnerApp(this@WorkCloneInstallerActivity.packageName) == true
 
-            // 2. Fast Path A: System apps (YouTube, Chrome, Gmail, etc.) -> enable directly via DPM
+            // 2. Fast Path A: System apps (YouTube, Chrome, Gmail, etc.) -> enable instantaneously via DPM
             if (isProfileOwner && dpm != null && isSystemApp) {
                 val enabled = withContext(Dispatchers.IO) {
                     runCatching {
@@ -237,21 +361,29 @@ class WorkCloneInstallerActivity : ComponentActivity() {
             }
 
             // 4. Universal Path: Stream base + all split APKs into Android PackageInstaller inside User 10
-            if (apkUris.isEmpty()) {
+            val splitCount = maxOf(apkPaths.size, apkUris.size)
+            if (splitCount == 0) {
                 uiState = CloneInstallUiState.Error(
                     appName = appName,
-                    message = "No APK files were received across the profile bridge. Try cloning again."
+                    message = "No APK files were located for $appName."
                 )
                 return@launch
             }
 
             uiState = CloneInstallUiState.Installing(
                 appName = appName,
-                detail = "Installing ${apkUris.size} unmodified APK package(s) into isolated Work Vault…"
+                detail = "Streaming $splitCount unmodified APK split(s) into isolated Work Vault…",
+                progress = 0.05f
             )
 
             val commitError = withContext(Dispatchers.IO) {
-                commitSplitApkSession(packageName, apkUris)
+                commitSplitApkSession(
+                    targetPackage = packageName,
+                    splitCount = splitCount,
+                    apkPaths = apkPaths,
+                    remoteFdBinder = remoteFdBinder,
+                    apkUris = apkUris
+                )
             }
             if (commitError != null) {
                 uiState = CloneInstallUiState.Error(appName, commitError)
@@ -259,41 +391,101 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         }
     }
 
-    private fun commitSplitApkSession(packageName: String, apkUris: List<Uri>): String? {
+    /**
+     * Opens an InputStream for split APK #[index] using our 3-layer zero-failure reader:
+     *   Layer 1: Direct `/data/app/.../base.apk` read (fastest, 0MB copy)
+     *   Layer 2: Kernel Binder IPC `ParcelFileDescriptor` from Personal Profile (bypasses SELinux/FileProvider)
+     *   Layer 3: `FileProvider` `content://` URI fallback
+     */
+    private fun openSplitApkStream(
+        index: Int,
+        apkPaths: List<String>,
+        remoteFdBinder: IBinder?,
+        apkUris: List<Uri>
+    ): Pair<InputStream, Long>? {
+        // Layer 1: Direct /data/app/.../base.apk read
+        val path = apkPaths.getOrNull(index)
+        if (!path.isNullOrBlank()) {
+            val directFile = File(path)
+            if (directFile.exists() && directFile.canRead()) {
+                val stream = runCatching { FileInputStream(directFile) }.getOrNull()
+                if (stream != null) {
+                    return stream to directFile.length().takeIf { it > 0L }.orMinusOne()
+                }
+            }
+        }
+
+        // Layer 2: Kernel Binder ParcelFileDescriptor IPC across User 0 -> User 10
+        val pfd = WorkCloneBridge.openRemoteApkFd(remoteFdBinder, index)
+        if (pfd != null) {
+            val size = runCatching { pfd.statSize }.getOrDefault(-1L)
+            return ParcelFileDescriptor.AutoCloseInputStream(pfd) to size
+        }
+
+        // Layer 3: FileProvider ClipData URI fallback
+        val uri = apkUris.getOrNull(index)
+        if (uri != null) {
+            val stream = runCatching { contentResolver.openInputStream(uri) }.getOrNull()
+            if (stream != null) {
+                return stream to -1L
+            }
+        }
+
+        return null
+    }
+
+    private fun Long?.orMinusOne(): Long = this ?: -1L
+
+    private fun commitSplitApkSession(
+        targetPackage: String,
+        splitCount: Int,
+        apkPaths: List<String>,
+        remoteFdBinder: IBinder?,
+        apkUris: List<Uri>
+    ): String? {
         val installer = packageManager.packageInstaller
         var session: PackageInstaller.Session? = null
         return try {
             val params = PackageInstaller.SessionParams(
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL
             ).apply {
-                setAppPackageName(packageName)
+                setAppPackageName(targetPackage)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
                 }
             }
 
             val sessionId = installer.createSession(params)
+            activeSessionId = sessionId
             session = installer.openSession(sessionId)
 
-            apkUris.forEachIndexed { index, uri ->
-                contentResolver.openInputStream(uri)?.use { input ->
-                    session.openWrite("split_$index.apk", 0L, -1L).use { output ->
+            for (index in 0 until splitCount) {
+                val opened = openSplitApkStream(index, apkPaths, remoteFdBinder, apkUris)
+                    ?: throw IllegalStateException(
+                        "Unable to read APK split #$index across User 0 → User 10 boundary."
+                    )
+
+                val (inputStream, sizeBytes) = opened
+                inputStream.use { input ->
+                    val splitName = if (index == 0) "base.apk" else "split_$index.apk"
+                    session.openWrite(splitName, 0L, sizeBytes).use { output ->
                         input.copyTo(output, bufferSize = 64 * 1024)
                         session.fsync(output)
                     }
-                } ?: throw IllegalStateException("Cannot open APK stream #$index from Personal Profile.")
+                }
             }
 
-            val callbackIntent = Intent(this, WorkCloneInstallerActivity::class.java).apply {
-                action = ACTION_INSTALL_SESSION_RESULT
-                putExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE, packageName)
+            // Explicit package name is MANDATORY on Android 14+ (API 34+) for FLAG_MUTABLE PendingIntent!
+            val callbackIntent = Intent(installCallbackAction()).apply {
+                setPackage(this@WorkCloneInstallerActivity.packageName)
+                putExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE, targetPackage)
                 putExtra(WorkCloneBridge.EXTRA_TARGET_APP_NAME, activeTargetAppName)
             }
 
             val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
 
-            val pendingIntent = PendingIntent.getActivity(
+            val pendingIntent = PendingIntent.getBroadcast(
                 this,
                 sessionId,
                 callbackIntent,
@@ -310,26 +502,26 @@ class WorkCloneInstallerActivity : ComponentActivity() {
         }
     }
 
-    private fun uninstallPackageInWorkProfile(packageName: String, appName: String) {
+    private fun uninstallPackageInWorkProfile(targetPackage: String, appName: String) {
         uiState = CloneInstallUiState.Installing(
             appName = appName,
             detail = "Removing $appName clone from Work Vault (/data/user/10/)…"
         )
         runCatching {
-            val callbackIntent = Intent(this, WorkCloneInstallerActivity::class.java).apply {
-                action = ACTION_UNINSTALL_SESSION_RESULT
-                putExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE, packageName)
+            val callbackIntent = Intent(uninstallCallbackAction()).apply {
+                setPackage(this@WorkCloneInstallerActivity.packageName)
+                putExtra(WorkCloneBridge.EXTRA_TARGET_PACKAGE, targetPackage)
                 putExtra(WorkCloneBridge.EXTRA_TARGET_APP_NAME, appName)
             }
             val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-            val pendingIntent = PendingIntent.getActivity(
+            val pendingIntent = PendingIntent.getBroadcast(
                 this,
-                packageName.hashCode(),
+                targetPackage.hashCode(),
                 callbackIntent,
                 pendingFlags
             )
-            packageManager.packageInstaller.uninstall(packageName, pendingIntent.intentSender)
+            packageManager.packageInstaller.uninstall(targetPackage, pendingIntent.intentSender)
         }.onFailure { err ->
             uiState = CloneInstallUiState.Error(
                 appName = appName,
@@ -360,7 +552,7 @@ class WorkCloneInstallerActivity : ComponentActivity() {
                     runCatching { startActivity(confirmIntent) }.onFailure { err ->
                         uiState = CloneInstallUiState.Error(
                             appName = appName,
-                            message = err.localizedMessage ?: "Unable to display Android install confirmation."
+                            message = err.localizedMessage ?: "Unable to open Android install confirmation."
                         )
                     }
                 } else {
@@ -374,6 +566,21 @@ class WorkCloneInstallerActivity : ComponentActivity() {
                     packageName = pkg,
                     detail = "Genuine $appName cloned into /data/user/10/ with a brand-new SSAID & clean storage!"
                 )
+            }
+
+            PackageInstaller.STATUS_FAILURE_BLOCKED -> {
+                if (!packageManager.canRequestPackageInstalls()) {
+                    uiState = CloneInstallUiState.NeedsInstallPermission(
+                        appName = appName,
+                        message = "Your phone requires 'Install unknown apps' enabled for MultiCreator inside Work Vault to clone $appName."
+                    )
+                } else {
+                    uiState = CloneInstallUiState.Error(
+                        appName = appName,
+                        message = statusMessage?.ifBlank { null }
+                            ?: "Installation was blocked by Android security policy."
+                    )
+                }
             }
 
             PackageInstaller.STATUS_FAILURE_ABORTED -> {
@@ -422,17 +629,14 @@ class WorkCloneInstallerActivity : ComponentActivity() {
             }
         }
     }
-
-    companion object {
-        private const val ACTION_INSTALL_SESSION_RESULT = "com.example.action.WORK_INSTALL_SESSION_RESULT"
-        private const val ACTION_UNINSTALL_SESSION_RESULT = "com.example.action.WORK_UNINSTALL_SESSION_RESULT"
-    }
 }
 
 @Composable
 private fun WorkCloneInstallerScreen(
     state: CloneInstallUiState,
     onLaunchInstalledClone: (String) -> Unit,
+    onOpenUnknownSourcesSettings: () -> Unit,
+    onRetryClone: () -> Unit,
     onDone: () -> Unit
 ) {
     CyberGlassBackground {
@@ -448,6 +652,7 @@ private fun WorkCloneInstallerScreen(
                     is CloneInstallUiState.Installing -> NeonCyan
                     is CloneInstallUiState.Success -> EmeraldGlow
                     is CloneInstallUiState.Uninstalled -> NeonCyanBright
+                    is CloneInstallUiState.NeedsInstallPermission -> NeonCyanBright
                     is CloneInstallUiState.Error -> RoseAlert
                 },
                 contentPadding = PaddingValues(24.dp)
@@ -476,6 +681,17 @@ private fun WorkCloneInstallerScreen(
                                 color = TextSecondary,
                                 textAlign = TextAlign.Center
                             )
+                            state.progress?.let { pct ->
+                                LinearProgressIndicator(
+                                    progress = { pct },
+                                    color = EmeraldGlow,
+                                    trackColor = GlassSurfaceFill,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(50.dp))
+                                )
+                            }
                         }
 
                         is CloneInstallUiState.Success -> {
@@ -539,6 +755,40 @@ private fun WorkCloneInstallerScreen(
                             )
                         }
 
+                        is CloneInstallUiState.NeedsInstallPermission -> {
+                            Icon(
+                                imageVector = Icons.Rounded.Settings,
+                                contentDescription = null,
+                                tint = NeonCyanBright,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                text = "Allow Work Vault Installer",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = TextPrimary,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = state.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+                            LiquidPillButton(
+                                text = "Allow Install Permission",
+                                icon = Icons.Rounded.Settings,
+                                onClick = onOpenUnknownSourcesSettings,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            LiquidPillButton(
+                                text = "Retry Cloning ${state.appName}",
+                                icon = Icons.Rounded.Refresh,
+                                isPrimary = false,
+                                onClick = onRetryClone,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
                         is CloneInstallUiState.Error -> {
                             Icon(
                                 imageVector = Icons.Rounded.ErrorOutline,
@@ -557,6 +807,12 @@ private fun WorkCloneInstallerScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = TextSecondary,
                                 textAlign = TextAlign.Center
+                            )
+                            LiquidPillButton(
+                                text = "Retry",
+                                icon = Icons.Rounded.Refresh,
+                                onClick = onRetryClone,
+                                modifier = Modifier.fillMaxWidth()
                             )
                             LiquidPillButton(
                                 text = "Close",

@@ -167,6 +167,31 @@ class WebSandboxManager(private val context: Context) {
     }
 
     /**
+     * Re-applies a newly selected User-Agent & desktop viewport mode while keeping the WebView's
+     * native Chromium ProfileStore CookieManager strictly bound to this container.
+     */
+    @SuppressLint("RequiresFeature")
+    fun reapplyUserAgentForContainer(
+        webView: WebView,
+        containerId: String,
+        mode: UserAgentMode,
+        fingerprintSeed: String
+    ) {
+        val profile = resolveFingerprintProfile(mode, fingerprintSeed)
+        val nativeProfile = if (isMultiProfileSupported()) {
+            runCatching { ProfileStore.getInstance().getProfile(toProfileName(containerId)) }.getOrNull()
+        } else {
+            null
+        }
+        configureIsolatedWebView(
+            webView = webView,
+            userAgent = profile.userAgent,
+            isDesktopMode = !profile.isMobile,
+            nativeProfile = nativeProfile
+        )
+    }
+
+    /**
      * Configures a WebView with hardened privacy settings, stripped `X-Requested-With` header,
      * profile-scoped CookieManager, and spoofed User-Agent.
      */

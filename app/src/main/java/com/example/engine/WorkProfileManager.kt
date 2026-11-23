@@ -450,6 +450,34 @@ class WorkProfileManager(private val context: Context) {
             Intent("android.settings.PRIVACY_SETTINGS"),
             Intent(Settings.ACTION_PRIVACY_SETTINGS)
         )
+        return launchFirstAvailableIntent(candidates)
+    }
+
+    /**
+     * Opens Android Accounts / Work Profile settings so users can remove a stale or ghost Work Profile.
+     */
+    fun openAndroidAccountsSettings(): Boolean {
+        return launchFirstAvailableIntent(
+            listOf(
+                Intent(Settings.ACTION_SYNC_SETTINGS),
+                Intent(Settings.ACTION_SETTINGS)
+            )
+        )
+    }
+
+    /**
+     * Opens Android Security / Screen Lock settings for devices with ROM lock-screen provisioning bugs.
+     */
+    fun openAndroidSecuritySettings(): Boolean {
+        return launchFirstAvailableIntent(
+            listOf(
+                Intent(Settings.ACTION_SECURITY_SETTINGS),
+                Intent(Settings.ACTION_SETTINGS)
+            )
+        )
+    }
+
+    private fun launchFirstAvailableIntent(candidates: List<Intent>): Boolean {
         for (intent in candidates) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val launched = runCatching {

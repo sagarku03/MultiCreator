@@ -55,7 +55,11 @@ class ContainerEngine(private val context: Context) {
     val containersFlow: Flow<List<AppContainer>> =
         context.localContainerDataStore.data.map { prefs ->
             val raw = prefs[clonesKey]
-            if (raw.isNullOrBlank()) emptyList() else parseContainers(raw)
+            if (raw.isNullOrBlank()) {
+                emptyList()
+            } else {
+                parseContainers(raw).filter { !it.webTargetUrl.isNullOrBlank() }
+            }
         }
 
     /**

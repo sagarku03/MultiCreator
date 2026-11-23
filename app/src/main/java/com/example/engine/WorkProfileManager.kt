@@ -10,7 +10,6 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
-import android.media.MediaDrm
 import android.net.Uri
 import android.os.Build
 import android.os.Process
@@ -21,7 +20,6 @@ import android.webkit.WebView
 import androidx.core.graphics.toColorInt
 import com.example.data.DpcAdminReceiver
 import com.example.dpc.WorkCloneBridge
-import java.util.UUID
 
 data class InstalledAppItem(
     val packageName: String,
@@ -46,7 +44,7 @@ data class DeviceHealthSnapshot(
     val deviceModel: String,
     val webViewEngineVersion: String,
     val securityPatchLevel: String,
-    val widevineSecurityLevel: String,
+    val hardwareAttestationLevel: String,
     val multiProfileWebViewSupported: Boolean,
     val documentStartShieldSupported: Boolean,
     val requestedWithStripSupported: Boolean,
@@ -81,13 +79,57 @@ class WorkProfileManager(private val context: Context) {
     private val packageManager: PackageManager = context.packageManager
 
     /**
-     * Returns true if a secondary managed Work Profile exists on this device or if MultiCreator
-     * itself is currently executing as the Profile Owner inside a Work Profile.
+     * Extracts the numeric Android user ID from a UserHandle (e.g. 0 = Personal, 10 = Work Profile,
+     * 999 = Vivo/Xiaomi/OPPO OEM App Clone space).
+     */
+    private fun extractUserId(handle: UserHandle): Int {
+        val text = handle.toString() // Standard AOSP format: "UserHandle{10}" or "UserHandle{999}"
+        val match = Regex("\\{(\\d+)\\}").find(text)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: handle.hashCode()
+    }
+
+    /**
+     * Returns true if this UserHandle is an OEM App Clone / Dual Apps user (e.g. Vivo/Xiaomi/OPPO User 999)
+     * rather than a standard Android Enterprise Managed Work Profile (User 10..899).
+     */
+    private fun isOemCloneUserHandle(handle: UserHandle): Boolean {
+        val uid = extractUserId(handle)
+        return uid >= 900
+    }
+
+    /**
+     * Returns the secondary UserHandle owned by MultiCreator's Work Vault (where MultiCreator itself
+     * is installed as Profile Owner), strictly ignoring OEM User 999 clone spaces.
+     */
+    fun getWorkUserHandle(): UserHandle? {
+        val currentHandle = Process.myUserHandle()
+        val otherProfiles = (userManager?.userProfiles ?: emptyList()).filter { it != currentHandle }
+        if (otherProfiles.isEmpty()) return null
+
+        // 1. Prefer the profile where MultiCreator itself is installed (our real Work Vault!)
+        val lApps = launcherApps
+        if (lApps != null) {
+            val ownVaultHandle = otherProfiles.firstOrNull { handle ->
+                !isOemCloneUserHandle(handle) && isAppInstalledInWorkProfile(context.packageName, handle)
+            }
+            if (ownVaultHandle != null) return ownVaultHandle
+        }
+
+        // 2. Next, check for any non-OEM-999 managed profile handle (e.g. User 10..899)
+        return otherProfiles.firstOrNull { !isOemCloneUserHandle(it) }
+    }
+
+    /**
+     * Returns true ONLY if MultiCreator's Managed Work Vault is genuinely active:
+     * - Either we are currently executing INSIDE User 10 as Profile Owner, OR
+     * - The cross-profile APK clone bridge is live, OR
+     * - MultiCreator is installed inside a real secondary Work Profile handle (ignoring Vivo/Xiaomi User 999!).
      */
     fun checkIfWorkProfileActive(): Boolean {
         if (isProfileOwner()) return true
-        val profiles = userManager?.userProfiles ?: emptyList()
-        return profiles.size > 1
+        if (WorkCloneBridge.isCrossProfileCloneRouteReady(context)) return true
+        val workHandle = getWorkUserHandle() ?: return false
+        return isAppInstalledInWorkProfile(context.packageName, workHandle)
     }
 
     /**
@@ -124,19 +166,17 @@ class WorkProfileManager(private val context: Context) {
     }
 
     /**
-     * Checks whether this device hardware & ROM supports Android Managed Work Profiles.
+     * Checks whether this device hardware & ROM supports Android Managed Work Profiles
+     * and includes the system ManagedProvisioning handler.
      */
     fun isManagedProfileSupported(): Boolean {
-        return packageManager.hasSystemFeature(PackageManager.FEATURE_MANAGED_USERS)
-    }
-
-    /**
-     * Resolves the secondary Work Profile UserHandle when available.
-     */
-    fun getWorkUserHandle(): UserHandle? {
-        val currentHandle = Process.myUserHandle()
-        val profiles = userManager?.userProfiles ?: return null
-        return profiles.firstOrNull { it != currentHandle }
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_MANAGED_USERS)) {
+            return false
+        }
+        val probe = provisionWorkProfile()
+        return runCatching {
+            packageManager.resolveActivity(probe, 0) != null
+        }.getOrDefault(true)
     }
 
     /**
@@ -164,9 +204,9 @@ class WorkProfileManager(private val context: Context) {
      */
     fun getInstalledApps(): List<InstalledAppItem> {
         val selfPackage = context.packageName
-        val workHandle = getWorkUserHandle()
+        val workHandle = if (checkIfWorkProfileActive()) getWorkUserHandle() else null
         val lApps = launcherApps
-        val workPackages: Set<String> = if (workHandle != null && lApps != null) {
+        val workPackages: Set<String> = if (workHandle != null && lApps != null && !isProfileOwner()) {
             runCatching {
                 lApps.getActivityList(null, workHandle)
                     .map { it.applicationInfo.packageName }
@@ -384,7 +424,7 @@ class WorkProfileManager(private val context: Context) {
             }
         }.getOrNull() ?: "Android System WebView"
 
-        val widevineLevel = queryWidevineSecurityLevel()
+        val attestationLevel = queryHardwareAttestationLevel()
         val stealthCaps = WebSandboxManager(context).getWebViewStealthCapabilities()
 
         var score = 30
@@ -393,7 +433,7 @@ class WorkProfileManager(private val context: Context) {
         if (bridgeReady) score += 10
         if (stealthCaps.multiProfileSupported) score += 15
         if (stealthCaps.documentStartScriptSupported) score += 10
-        if (widevineLevel.startsWith("L1")) score += 5
+        if (attestationLevel.contains("Verified") || attestationLevel.contains("Active")) score += 5
         if (activeWebContainersCount > 0) score += 5
 
         return DeviceHealthSnapshot(
@@ -409,7 +449,7 @@ class WorkProfileManager(private val context: Context) {
             deviceModel = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}",
             webViewEngineVersion = webViewVersion,
             securityPatchLevel = Build.VERSION.SECURITY_PATCH.ifBlank { "Verified" },
-            widevineSecurityLevel = widevineLevel,
+            hardwareAttestationLevel = attestationLevel,
             multiProfileWebViewSupported = stealthCaps.multiProfileSupported,
             documentStartShieldSupported = stealthCaps.documentStartScriptSupported,
             requestedWithStripSupported = stealthCaps.requestedWithHeaderControlSupported,
@@ -419,25 +459,22 @@ class WorkProfileManager(private val context: Context) {
     }
 
     /**
-     * Queries hardware Widevine DRM security level (L1 = Hardware TEE vs L3 = Software fallback),
-     * a real signal evaluated by streaming and anti-fraud systems alongside Play Integrity.
+     * Queries hardware-backed keystore / TEE attestation capabilities via PackageManager system
+     * features without invoking legacy HIDL MediaDrm passthrough factories.
      */
-    private fun queryWidevineSecurityLevel(): String {
-        val widevineUuid = UUID(-0x121074568629b532L, -0x5c37d8232ae2de13L)
-        return runCatching {
-            val drm = MediaDrm(widevineUuid)
-            try {
-                val level = drm.getPropertyString("securityLevel").ifBlank { "Unknown" }
-                if (level.equals("L1", ignoreCase = true)) "L1 (Hardware TEE Verified)" else "$level (Software)"
-            } finally {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    drm.close()
-                } else {
-                    @Suppress("DEPRECATION")
-                    drm.release()
-                }
-            }
-        }.getOrDefault("Unavailable")
+    private fun queryHardwareAttestationLevel(): String {
+        val hasStrongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+        if (hasStrongBox) return "StrongBox Hardware TEE Verified"
+
+        val hasAppAttestKey = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_KEYSTORE_APP_ATTEST_KEY)
+        if (hasAppAttestKey) return "Hardware Key Attestation Verified"
+
+        val hasVerifiedBoot = packageManager.hasSystemFeature(PackageManager.FEATURE_VERIFIED_BOOT)
+        if (hasVerifiedBoot) return "Verified Boot TEE Active"
+
+        return "Standard Keystore"
     }
 
     /**

@@ -912,7 +912,7 @@ private fun InstalledAppGlassCard(
                         .testTag("clone_button_${app.packageName}")
                 )
 
-                if (app.hasWebPortal) {
+                if (app.hasWebPortal || hasWebClones) {
                     LiquidPillButton(
                         text = if (hasWebClones) "Web" else "Web Clone",
                         icon = Icons.Rounded.Language,
@@ -1032,6 +1032,8 @@ private fun WorkVaultTroubleshooterDialog(
     val manufacturer = remember { Build.MANUFACTURER.lowercase() }
     val oemHint = remember(manufacturer) {
         when {
+            manufacturer.contains("vivo") || manufacturer.contains("iqoo") ->
+                "Vivo / iQOO (Funtouch OS / OriginOS) detected:\n1) Temporarily set Screen Lock to 'None' or 'Swipe' in Security Settings, then tap Retry — Vivo's lock screen often interrupts Work Profile creation.\n2) Remove any old Work Profile under Settings → Accounts.\n3) Once Work Vault is created, you can re-enable your PIN/fingerprint!"
             manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") ->
                 "MIUI / HyperOS detected: Built-in 'Dual Apps' creates a hidden User 999 that blocks Android Work Profiles. Delete Dual Apps in Settings → Apps → Dual Apps → Settings icon → Delete Dual apps' accounts, then retry."
             manufacturer.contains("samsung") ->

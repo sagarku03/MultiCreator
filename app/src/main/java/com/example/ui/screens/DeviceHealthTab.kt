@@ -251,9 +251,12 @@ fun DeviceHealthTab(
                     HorizontalDivider(color = GlassBorderSubtle)
                     DiagnosticRow(
                         icon = Icons.Rounded.Security,
-                        label = "Widevine DRM Hardware Attestation",
-                        value = diagnostics.widevineSecurityLevel,
-                        valueColor = if (diagnostics.widevineSecurityLevel.startsWith("L1")) EmeraldGlow else AmberPulse
+                        label = "Hardware Security & TEE Attestation",
+                        value = diagnostics.hardwareAttestationLevel,
+                        valueColor = if (
+                            diagnostics.hardwareAttestationLevel.contains("Verified") ||
+                            diagnostics.hardwareAttestationLevel.contains("Active")
+                        ) EmeraldGlow else AmberPulse
                     )
                     HorizontalDivider(color = GlassBorderSubtle)
                     DiagnosticRow(

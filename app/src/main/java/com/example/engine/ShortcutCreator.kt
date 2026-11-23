@@ -16,6 +16,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
 import androidx.core.graphics.drawable.toBitmap
 import com.example.data.WebContainerProfile
+import com.example.dpc.WorkProfileTrampolineActivity
 import com.example.ui.screens.ContainerHostActivity
 import com.example.ui.screens.WebSandboxActivity
 
@@ -27,13 +28,64 @@ sealed class ShortcutPinResult {
 
 /**
  * Creates 1-click badged launcher shortcuts directly on the Android Home Screen using
- * ShortcutManager.requestPinShortcut() targeting ContainerHostActivity (for cloned apps)
- * and WebSandboxActivity (for isolated Web Stealth containers).
+ * ShortcutManager.requestPinShortcut():
+ * - Native Work Profile Clones -> WorkProfileTrampolineActivity (launches REAL User 10 clone)
+ * - Web Clones -> ContainerHostActivity (launches isolated Chromium ProfileStore sandbox)
+ * - Web Stealth Profiles -> WebSandboxActivity
  */
 class ShortcutCreator(private val context: Context) {
 
     private val shortcutManager: ShortcutManager? =
         context.getSystemService(ShortcutManager::class.java)
+
+    /**
+     * Pins a Home Screen shortcut that directly launches a genuine native Work Profile clone
+     * inside /data/user/10/ via WorkProfileTrampolineActivity (never launches the personal app).
+     */
+    fun pinNativeWorkCloneShortcut(app: InstalledAppItem): ShortcutPinResult {
+        val manager = shortcutManager
+            ?: return ShortcutPinResult.Unsupported("ShortcutManager unavailable on this device.")
+        if (!manager.isRequestPinShortcutSupported) {
+            return ShortcutPinResult.Unsupported(
+                "Current Home Screen launcher does not support pinned shortcuts."
+            )
+        }
+
+        val resolvedBitmap = app.icon?.let {
+            runCatching { it.toBitmap(width = 144, height = 144) }.getOrNull()
+        }
+
+        val badgedBitmap = renderBadgedCloneBitmap(
+            sourceBitmap = resolvedBitmap,
+            fallbackInitial = app.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "W",
+            badgeText = "W"
+        )
+
+        val launchIntent = WorkProfileTrampolineActivity.createLaunchIntent(
+            context = context,
+            packageName = app.packageName,
+            appName = app.appName
+        )
+        val shortLabel = "${app.appName} (Work)".take(25)
+
+        val shortcutInfo = ShortcutInfo.Builder(context, "mc_work_${app.packageName}")
+            .setShortLabel(shortLabel)
+            .setLongLabel("${app.appName} • Isolated Work Clone")
+            .setIcon(Icon.createWithAdaptiveBitmap(badgedBitmap))
+            .setIntent(launchIntent)
+            .build()
+
+        return runCatching {
+            val requested = manager.requestPinShortcut(shortcutInfo, null)
+            if (requested) {
+                ShortcutPinResult.Pinned(shortLabel)
+            } else {
+                ShortcutPinResult.Unsupported("Launcher declined shortcut pin request.")
+            }
+        }.getOrElse { ex ->
+            ShortcutPinResult.Error(ex.localizedMessage ?: "Failed to pin shortcut.")
+        }
+    }
 
     /**
      * Pins a Home Screen shortcut targeting ContainerHostActivity with EXTRA_CONTAINER_ID
@@ -63,7 +115,7 @@ class ShortcutCreator(private val context: Context) {
         val badgedBitmap = renderBadgedCloneBitmap(
             sourceBitmap = resolvedBitmap,
             fallbackInitial = container.appName.firstOrNull()?.uppercaseChar()?.toString() ?: "M",
-            slotNumber = container.slotNumber
+            badgeText = "#${container.slotNumber}"
         )
 
         val launchIntent = ContainerHostActivity.createLaunchIntent(context, container)
@@ -141,7 +193,7 @@ class ShortcutCreator(private val context: Context) {
     private fun renderBadgedCloneBitmap(
         sourceBitmap: Bitmap?,
         fallbackInitial: String,
-        slotNumber: Int
+        badgeText: String
     ): Bitmap {
         val size = 192
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -175,7 +227,7 @@ class ShortcutCreator(private val context: Context) {
             canvas.drawText(fallbackInitial, size / 2f, size / 2f + 24f, textPaint)
         }
 
-        // Luminous bottom-right Clone Slot Badge (#1, #2, #3...)
+        // Luminous bottom-right Clone Badge (W for Native Work Vault, #1/#2 for Web Slots)
         val cx = size - 44f
         val cy = size - 44f
         val outerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF090D16.toInt() }
@@ -194,7 +246,7 @@ class ShortcutCreator(private val context: Context) {
         }
         canvas.drawCircle(cx, cy, 24f, outerRing)
         canvas.drawCircle(cx, cy, 19f, badgeFill)
-        canvas.drawText("#$slotNumber", cx, cy + 8f, glyphPaint)
+        canvas.drawText(badgeText, cx, cy + 8f, glyphPaint)
 
         return bitmap
     }

@@ -333,12 +333,16 @@ fun DeviceHealthTab(
                         subtitle = "Neutralizes RTCPeerConnection network probes inside every cloned container."
                     )
                     AuditCheckItem(
-                        passed = diagnostics.isWorkProfileActive,
-                        title = "Optional Android Work Profile Partition",
-                        subtitle = if (diagnostics.isWorkProfileActive) {
-                            "Secondary OS user handle (/data/user/10/) detected."
-                        } else {
-                            "Local isolated containers are active; tap Work Profile above for OS-level separation."
+                        passed = diagnostics.isWorkProfileActive && diagnostics.isCrossProfileBridgeReady,
+                        title = "Android Work Vault & Cross-Profile APK Bridge",
+                        subtitle = when {
+                            diagnostics.isProfileOwner -> "Running inside /data/user/10/ as active Profile Owner."
+                            diagnostics.isWorkProfileActive && diagnostics.isCrossProfileBridgeReady ->
+                                "Secondary OS partition (/data/user/10/) & cross-profile APK installer bridge active."
+                            diagnostics.isWorkProfileActive ->
+                                "Work Profile exists; open MultiCreator in Work tab once to sync the APK bridge."
+                            else ->
+                                "Tap Work Profile above or on Home to activate OS-level native cloning (/data/user/10/)."
                         }
                     )
                 }

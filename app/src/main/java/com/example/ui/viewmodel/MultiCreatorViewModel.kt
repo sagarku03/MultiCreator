@@ -10,6 +10,7 @@ import com.example.data.ContainerStore
 import com.example.data.UserAgentMode
 import com.example.data.WebContainerProfile
 import com.example.engine.AppContainer
+import com.example.engine.CloneActionResult
 import com.example.engine.ContainerEngine
 import com.example.engine.DeviceHealthSnapshot
 import com.example.engine.InstalledAppItem
@@ -58,7 +59,12 @@ data class MultiCreatorUiState(
     val appFilterMode: AppFilterMode = AppFilterMode.ALL,
     val isWorkProfileActive: Boolean = false,
     val isProfileOwner: Boolean = false,
+    val isCrossProfileBridgeReady: Boolean = false,
+    val isSelfInWorkProfile: Boolean = false,
     val supportsManagedProfiles: Boolean = true,
+    val cloningPackageName: String? = null,
+    val pendingWorkSetupApp: InstalledAppItem? = null,
+    val nativeWorkClonedCount: Int = 0,
     val clonedCount: Int = 0,
     val webContainers: List<WebContainerProfile> = emptyList(),
     val diagnostics: DeviceHealthSnapshot? = null,
@@ -68,6 +74,7 @@ data class MultiCreatorUiState(
 
 sealed class MultiCreatorEvent {
     data class LaunchWorkProfileProvisioning(val intent: Intent) : MultiCreatorEvent()
+    data class LaunchCrossProfileIntent(val intent: Intent) : MultiCreatorEvent()
     data class LaunchContainer(val container: AppContainer) : MultiCreatorEvent()
     data class OpenWebSandbox(val container: WebContainerProfile) : MultiCreatorEvent()
 }
@@ -83,7 +90,7 @@ class MultiCreatorViewModel(
     private val _uiState = MutableStateFlow(MultiCreatorUiState())
     val uiState: StateFlow<MultiCreatorUiState> = _uiState.asStateFlow()
 
-    private val _events = MutableSharedFlow<MultiCreatorEvent>(extraBufferCapacity = 6)
+    private val _events = MutableSharedFlow<MultiCreatorEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<MultiCreatorEvent> = _events.asSharedFlow()
 
     init {
@@ -102,15 +109,15 @@ class MultiCreatorViewModel(
                 _uiState.update { state ->
                     val mergedApps = sortAppsWithClones(state.installedApps, primaryByPackage)
                     val filtered = applyAppFilter(mergedApps, primaryByPackage, state.searchQuery, state.appFilterMode)
+                    val workCount = mergedApps.count { it.isClonedInWorkProfile }
                     state.copy(
                         localClones = clones,
                         clonesByPackage = primaryByPackage,
                         clonesByPackageList = grouped,
                         installedApps = mergedApps,
                         filteredApps = filtered,
-                        clonedCount = clones.size + mergedApps.count {
-                            it.isClonedInWorkProfile && it.packageName !in primaryByPackage
-                        }
+                        nativeWorkClonedCount = workCount,
+                        clonedCount = workCount + clones.size
                     )
                 }
             }
@@ -131,30 +138,41 @@ class MultiCreatorViewModel(
     fun refreshEcosystem() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingApps = it.installedApps.isEmpty()) }
-            val snapshot = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 val workActive = workProfileManager.checkIfWorkProfileActive()
                 val profileOwner = workProfileManager.isProfileOwner()
+                val bridgeReady = workProfileManager.isCrossProfileBridgeReady()
+                val selfInWork = workProfileManager.isSelfInstalledInWorkProfile()
                 val supportsManaged = workProfileManager.isManagedProfileSupported()
                 val apps = workProfileManager.getInstalledApps()
                 val diag = workProfileManager.getDeviceDiagnostics(_uiState.value.webContainers.size)
-                Triple(Triple(workActive, profileOwner, supportsManaged), apps, diag)
+                EcosystemRefreshSnapshot(
+                    workActive = workActive,
+                    profileOwner = profileOwner,
+                    bridgeReady = bridgeReady,
+                    selfInWork = selfInWork,
+                    supportsManaged = supportsManaged,
+                    apps = apps,
+                    diag = diag
+                )
             }
-            val (profileFlags, apps, diag) = snapshot
             _uiState.update { state ->
                 val byPackage = state.clonesByPackage
-                val sorted = sortAppsWithClones(apps, byPackage)
+                val sorted = sortAppsWithClones(result.apps, byPackage)
                 val filtered = applyAppFilter(sorted, byPackage, state.searchQuery, state.appFilterMode)
+                val workCount = sorted.count { it.isClonedInWorkProfile }
                 state.copy(
                     isLoadingApps = false,
                     installedApps = sorted,
                     filteredApps = filtered,
-                    isWorkProfileActive = profileFlags.first,
-                    isProfileOwner = profileFlags.second,
-                    supportsManagedProfiles = profileFlags.third,
-                    clonedCount = state.localClones.size + sorted.count {
-                        it.isClonedInWorkProfile && it.packageName !in byPackage
-                    },
-                    diagnostics = diag
+                    isWorkProfileActive = result.workActive,
+                    isProfileOwner = result.profileOwner,
+                    isCrossProfileBridgeReady = result.bridgeReady,
+                    isSelfInWorkProfile = result.selfInWork,
+                    supportsManagedProfiles = result.supportsManaged,
+                    nativeWorkClonedCount = workCount,
+                    clonedCount = workCount + state.localClones.size,
+                    diagnostics = result.diag
                 )
             }
         }
@@ -203,50 +221,142 @@ class MultiCreatorViewModel(
         _uiState.update { it.copy(isSsaidRevealed = !it.isSsaidRevealed) }
     }
 
+    fun dismissWorkSetupDialog() {
+        _uiState.update { it.copy(pendingWorkSetupApp = null) }
+    }
+
     fun requestWorkProfileProvisioning() {
+        _uiState.update { it.copy(pendingWorkSetupApp = null) }
         if (!workProfileManager.isManagedProfileSupported()) {
-            postMessage("Managed Work Profiles are not supported by this Android build.")
+            postMessage("Android Managed Work Profiles are not supported by this ROM.")
             return
         }
         val intent = workProfileManager.provisionWorkProfile()
         _events.tryEmit(MultiCreatorEvent.LaunchWorkProfileProvisioning(intent))
     }
 
+    fun syncWorkVaultBridge() {
+        val launched = workProfileManager.launchSelfInWorkProfile()
+        if (launched) {
+            postMessage("Opening Work Vault copy of MultiCreator to sync cross-profile cloning bridge…")
+        } else {
+            postMessage("Could not find MultiCreator inside Work Profile. Try activating Work Vault first.")
+        }
+    }
+
     fun onProvisioningResult(success: Boolean) {
         if (success) {
-            postMessage("Work Profile Vault initialized with fresh SSAID partition.")
+            postMessage("Work Vault (/data/user/10/) activated with a fresh SSAID! You can now clone native apps.")
         } else {
-            postMessage("Work Profile setup was cancelled or deferred.")
+            postMessage("Work Vault setup was cancelled or not completed.")
         }
         refreshEcosystem()
     }
 
     /**
-     * Instant 1-Click Local App Cloner & Launcher:
-     * - If already cloned locally -> Launches ContainerHostActivity immediately.
-     * - If not yet cloned -> Instantly creates an isolated local container with its own
-     *   private directory, SharedPreferences, cookie vault, and virtual SSAID.
+     * REAL Native App Cloner & Launcher (/data/user/10/):
+     * - If the app is already genuinely installed inside Android's Work Profile -> launches THAT
+     *   isolated User 10 instance via LauncherApps.startMainActivity(component, workUserHandle).
+     * - If not yet installed in Work Profile -> stages the genuine unmodified base + split APKs
+     *   and dispatches them across the profile boundary to WorkCloneInstallerActivity inside User 10.
+     * - NEVER falls back to opening the personal profile app!
      */
-    fun cloneOrLaunchApp(app: InstalledAppItem) {
-        val existingLocalClone = _uiState.value.clonesByPackage[app.packageName]
-        if (existingLocalClone != null) {
-            _events.tryEmit(MultiCreatorEvent.LaunchContainer(existingLocalClone))
+    fun cloneOrLaunchNativeApp(app: InstalledAppItem) {
+        if (app.isClonedInWorkProfile) {
+            val launched = workProfileManager.launchAppInWorkProfile(app.packageName)
+            if (!launched) {
+                postMessage("Unable to launch ${app.appName} Work Clone. Make sure Work Profile is turned ON.")
+            }
             return
         }
 
+        if (_uiState.value.cloningPackageName != null) {
+            postMessage("Another app clone is currently being prepared…")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(cloningPackageName = app.packageName) }
+            val result = workProfileManager.prepareNativeWorkClone(app.packageName, app.appName)
+            _uiState.update { it.copy(cloningPackageName = null) }
+
+            when (result) {
+                is CloneActionResult.ReadyToDispatchInstaller -> {
+                    _events.emit(MultiCreatorEvent.LaunchCrossProfileIntent(result.installerIntent))
+                }
+
+                is CloneActionResult.ClonedDirectly -> {
+                    postMessage("Cloned ${result.appName} into Work Vault (/data/user/10/) with a fresh SSAID!")
+                    refreshEcosystem()
+                }
+
+                is CloneActionResult.AlreadyCloned -> {
+                    workProfileManager.launchAppInWorkProfile(app.packageName)
+                    refreshEcosystem()
+                }
+
+                is CloneActionResult.NeedsWorkProfileSetup -> {
+                    _uiState.update { it.copy(pendingWorkSetupApp = app) }
+                }
+
+                is CloneActionResult.NeedsBridgeSync -> {
+                    val synced = workProfileManager.launchSelfInWorkProfile()
+                    if (synced) {
+                        postMessage("Syncing MultiCreator Work Vault bridge once — return here and tap Clone again.")
+                    } else {
+                        postMessage("Open the badged MultiCreator app in your Work tab once to activate the clone bridge.")
+                    }
+                }
+
+                is CloneActionResult.ForeignWorkProfile -> {
+                    val hint = if (app.hasWebPortal) {
+                        "Use 'Web Clone' for instant isolated accounts, or remove your existing Work Profile in Android Settings to let MultiCreator manage it."
+                    } else {
+                        "Another app already owns this phone's Work Profile slot. Remove it in Android Settings → Passwords & accounts → Work to let MultiCreator clone native apps."
+                    }
+                    postMessage(hint)
+                }
+
+                is CloneActionResult.Error -> {
+                    postMessage(result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Uninstalls a genuinely cloned native app from the Work Profile (/data/user/10/).
+     */
+    fun uninstallWorkClone(app: InstalledAppItem) {
+        val intent = workProfileManager.buildUninstallWorkCloneIntent(app.packageName, app.appName)
+        if (intent != null) {
+            _events.tryEmit(MultiCreatorEvent.LaunchCrossProfileIntent(intent))
+        } else {
+            postMessage("Open Android Settings → Apps → Work to uninstall ${app.appName} from Work Profile.")
+        }
+    }
+
+    /**
+     * Instant Multi-Account Isolated Web Clone (Chromium ProfileStore):
+     * Launches an existing isolated Chromium profile for this app, or creates Slot #1 and opens it.
+     */
+    fun openOrCreateWebClone(app: InstalledAppItem) {
+        val existing = _uiState.value.clonesByPackage[app.packageName]
+        if (existing != null) {
+            _events.tryEmit(MultiCreatorEvent.LaunchContainer(existing))
+            return
+        }
         viewModelScope.launch {
             val created = containerEngine.createLocalClone(
                 packageName = app.packageName,
                 appName = app.appName
             )
-            postMessage(
-                "Created ${created.displayLabel} • Isolated SSAID ${created.virtualSsaid.take(8)} ready."
-            )
+            _events.emit(MultiCreatorEvent.LaunchContainer(created))
         }
     }
 
     /**
-     * Spins up an additional isolated clone slot for an already-cloned app (e.g. Instagram #2, #3).
+     * Spins up an additional isolated Web Clone slot for an app (e.g. Instagram #2, #3, #4).
      */
     fun createAdditionalSlot(app: InstalledAppItem) {
         viewModelScope.launch {
@@ -255,8 +365,9 @@ class MultiCreatorViewModel(
                 appName = app.appName
             )
             postMessage(
-                "Added ${created.displayLabel} • Fresh Chromium Profile & SSAID ${created.virtualSsaid.take(8)}."
+                "Created ${created.displayLabel} • Fresh Chromium Profile & SSAID ${created.virtualSsaid.take(8)}."
             )
+            _events.emit(MultiCreatorEvent.LaunchContainer(created))
         }
     }
 
@@ -267,14 +378,15 @@ class MultiCreatorViewModel(
     fun deleteSpecificClone(container: AppContainer) {
         viewModelScope.launch {
             containerEngine.deleteClone(container.id)
-            postMessage("Purged ${container.displayLabel} isolated profile & container storage.")
+            postMessage("Purged ${container.displayLabel} isolated Chromium profile & cookies.")
         }
     }
 
-    /**
-     * Wipes the most recent cloned slot for this app.
-     */
     fun deleteLocalClone(app: InstalledAppItem) {
+        if (app.isClonedInWorkProfile) {
+            uninstallWorkClone(app)
+            return
+        }
         val existing = _uiState.value.clonesByPackage[app.packageName] ?: return
         deleteSpecificClone(existing)
     }
@@ -288,13 +400,35 @@ class MultiCreatorViewModel(
 
     /**
      * 1-Click Add to Home Screen:
-     * Ensures an isolated local container exists for the app (auto-cloning if needed),
-     * then pins a badged shortcut targeting ContainerHostActivity with EXTRA_CONTAINER_ID.
+     * - If natively cloned in Work Profile -> pins a direct User 10 Work Clone shortcut!
+     * - Else if a Web Clone exists (or app supports Web Clone) -> pins the isolated Chromium Web Clone shortcut!
+     * - NEVER pins a shortcut that launches the original personal app!
      */
     fun pinAppShortcut(app: InstalledAppItem) {
         viewModelScope.launch {
-            val container = _uiState.value.clonesByPackage[app.packageName]
-                ?: containerEngine.createLocalClone(app.packageName, app.appName)
+            if (app.isClonedInWorkProfile) {
+                when (val result = shortcutCreator.pinNativeWorkCloneShortcut(app)) {
+                    is ShortcutPinResult.Pinned ->
+                        postMessage("Pinned \"${result.label}\" Work Clone shortcut to Home Screen.")
+                    is ShortcutPinResult.Unsupported ->
+                        postMessage(result.reason)
+                    is ShortcutPinResult.Error ->
+                        postMessage(result.message)
+                }
+                return@launch
+            }
+
+            val existingWeb = _uiState.value.clonesByPackage[app.packageName]
+            val container = existingWeb ?: if (app.hasWebPortal) {
+                containerEngine.createLocalClone(app.packageName, app.appName)
+            } else {
+                null
+            }
+
+            if (container == null) {
+                postMessage("Clone ${app.appName} into Work Vault first before pinning its Home Screen shortcut.")
+                return@launch
+            }
 
             val bitmap = app.icon?.let { drawable ->
                 runCatching { drawable.toBitmap(width = 144, height = 144) }.getOrNull()
@@ -302,7 +436,7 @@ class MultiCreatorViewModel(
 
             when (val result = shortcutCreator.pinClonedShortcutDetailed(container, bitmap, app.icon)) {
                 is ShortcutPinResult.Pinned ->
-                    postMessage("Pinned \"${result.label}\" shortcut directly to Home Screen.")
+                    postMessage("Pinned \"${result.label}\" isolated Web Clone shortcut to Home Screen.")
                 is ShortcutPinResult.Unsupported ->
                     postMessage(result.reason)
                 is ShortcutPinResult.Error ->
@@ -313,16 +447,16 @@ class MultiCreatorViewModel(
 
     fun handleShortcutLaunchRequest(packageName: String, appName: String) {
         viewModelScope.launch {
+            val launchedInWork = workProfileManager.launchAppInWorkProfile(packageName)
+            if (launchedInWork) return@launch
+
             val existing = containerEngine.getClonesForPackage(packageName).firstOrNull()
             if (existing != null) {
                 _events.emit(MultiCreatorEvent.LaunchContainer(existing))
                 return@launch
             }
-            val launchedInWork = workProfileManager.launchAppInWorkProfile(packageName)
-            if (!launchedInWork) {
-                val created = containerEngine.createLocalClone(packageName, appName)
-                _events.emit(MultiCreatorEvent.LaunchContainer(created))
-            }
+
+            postMessage("$appName is not cloned yet. Tap 'Clone Native' to install it in Work Vault.")
         }
     }
 
@@ -397,9 +531,8 @@ class MultiCreatorViewModel(
         clonesByPackage: Map<String, AppContainer>
     ): List<InstalledAppItem> {
         return apps.sortedWith(
-            compareByDescending<InstalledAppItem> {
-                it.packageName in clonesByPackage || it.isClonedInWorkProfile
-            }
+            compareByDescending<InstalledAppItem> { it.isClonedInWorkProfile }
+                .thenByDescending { it.packageName in clonesByPackage }
                 .thenBy { it.isSystemApp }
                 .thenBy { it.appName.lowercase() }
         )
@@ -413,7 +546,7 @@ class MultiCreatorViewModel(
     ): List<InstalledAppItem> {
         val trimmed = query.trim().lowercase()
         return apps.filter { app ->
-            val isCloned = app.packageName in clonesByPackage || app.isClonedInWorkProfile
+            val isCloned = app.isClonedInWorkProfile || app.packageName in clonesByPackage
             val matchesMode = when (mode) {
                 AppFilterMode.ALL -> true
                 AppFilterMode.CLONED -> isCloned
@@ -426,6 +559,16 @@ class MultiCreatorViewModel(
             matchesMode && matchesQuery
         }
     }
+
+    private data class EcosystemRefreshSnapshot(
+        val workActive: Boolean,
+        val profileOwner: Boolean,
+        val bridgeReady: Boolean,
+        val selfInWork: Boolean,
+        val supportsManaged: Boolean,
+        val apps: List<InstalledAppItem>,
+        val diag: DeviceHealthSnapshot
+    )
 
     class Factory(private val appContext: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

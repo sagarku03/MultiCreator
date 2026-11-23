@@ -63,6 +63,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         gitHubUpdater = GitHubUpdater(applicationContext)
+        // If this instance is running inside the Work Profile (User 10) as Profile Owner,
+        // ensure the cross-profile APK cloning bridge is always registered and enabled.
+        com.example.dpc.WorkCloneBridge.configureWorkProfilePolicies(applicationContext)
         handleIncomingIntent(intent)
 
         setContent {
@@ -153,6 +156,17 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
+                            is MultiCreatorEvent.LaunchCrossProfileIntent -> {
+                                runCatching {
+                                    startActivity(event.intent)
+                                }.onFailure { err ->
+                                    viewModel.postMessage(
+                                        err.localizedMessage
+                                            ?: "Unable to route clone request to Work Vault. Open MultiCreator in Work tab once to sync."
+                                    )
+                                }
+                            }
+
                             is MultiCreatorEvent.LaunchContainer -> {
                                 val containerIntent = ContainerHostActivity.createLaunchIntent(
                                     context = this@MainActivity,
@@ -179,7 +193,10 @@ class MainActivity : ComponentActivity() {
                     onFilterModeChange = viewModel::onFilterModeChange,
                     onRefresh = viewModel::refreshEcosystem,
                     onProvisionWorkProfile = viewModel::requestWorkProfileProvisioning,
-                    onCloneOrLaunchApp = viewModel::cloneOrLaunchApp,
+                    onSyncWorkBridge = viewModel::syncWorkVaultBridge,
+                    onDismissWorkSetupDialog = viewModel::dismissWorkSetupDialog,
+                    onCloneOrLaunchNativeApp = viewModel::cloneOrLaunchNativeApp,
+                    onOpenOrCreateWebClone = viewModel::openOrCreateWebClone,
                     onCreateAdditionalSlot = viewModel::createAdditionalSlot,
                     onLaunchSpecificClone = viewModel::launchSpecificClone,
                     onDeleteLocalClone = viewModel::deleteLocalClone,

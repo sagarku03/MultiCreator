@@ -159,7 +159,7 @@ class ContainerHostActivity : ComponentActivity() {
                     onTrackOrigin = { origin -> visitedOrigins.add(origin) },
                     onSaveCookies = { cid -> persistCookiesToContainerFile(cid) },
                     onRestoreCookies = { cid, onReady -> restoreCookiesFromContainerFile(cid, onReady) },
-                    onLaunchNativeTarget = { pkg -> launchNativePackageIsolated(pkg) },
+                    onLaunchWorkClone = { pkg -> launchRealWorkProfileClone(pkg) },
                     onExit = { finish() }
                 )
             }
@@ -244,17 +244,9 @@ class ContainerHostActivity : ComponentActivity() {
         runCatching { jarFile.writeText(out.toString()) }
     }
 
-    private fun launchNativePackageIsolated(targetPackage: String): Boolean {
-        val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage) ?: return false
-        launchIntent.addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
-                Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-        )
-        return runCatching {
-            startActivity(launchIntent)
-            true
-        }.getOrDefault(false)
+    private fun launchRealWorkProfileClone(targetPackage: String): Boolean {
+        return com.example.engine.WorkProfileManager(applicationContext)
+            .launchAppInWorkProfile(targetPackage)
     }
 
     companion object {
@@ -285,7 +277,7 @@ private fun ContainerHostScreen(
     onTrackOrigin: (String) -> Unit,
     onSaveCookies: (String) -> Unit,
     onRestoreCookies: (String, () -> Unit) -> Unit,
-    onLaunchNativeTarget: (String) -> Boolean,
+    onLaunchWorkClone: (String) -> Boolean,
     onExit: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -695,7 +687,7 @@ private fun ContainerHostScreen(
                                     )
                                 }
                                 Text(
-                                    text = "Dedicated filesystem partition and virtual SSAID provisioned for ${active.appName}. Launch the target app in an isolated multi-task window or attach a stealth web portal below.",
+                                    text = "MultiCreator never opens your personal app here. To run a separate native copy of ${active.appName} with a new SSAID & empty data, clone it into Android Work Vault (/data/user/10/) from Home — or attach an isolated HTTPS web portal below.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )
@@ -743,20 +735,20 @@ private fun ContainerHostScreen(
 
                                 Spacer(modifier = Modifier.height(4.dp))
                                 LiquidPillButton(
-                                    text = "Launch ${active.appName} (Isolated Task)",
+                                    text = "Launch ${active.appName} Work Clone (/data/user/10/)",
                                     icon = Icons.Rounded.Launch,
                                     accentColors = listOf(EmeraldGlow, NeonCyan),
                                     onClick = {
-                                        val ok = onLaunchNativeTarget(active.packageName)
+                                        val ok = onLaunchWorkClone(active.packageName)
                                         if (!ok) {
                                             scope.launch {
-                                                snackbarHostState.showSnackbar("Unable to resolve native launcher activity for ${active.packageName}.")
+                                                snackbarHostState.showSnackbar("Not cloned in Work Vault yet. Go back and tap 'Clone Native' to install into /data/user/10/.")
                                             }
                                         }
                                     },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .testTag("container_launch_native_button")
+                                        .testTag("container_launch_work_button")
                                 )
                             }
                         }

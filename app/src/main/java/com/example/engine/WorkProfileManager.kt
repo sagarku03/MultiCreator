@@ -20,6 +20,7 @@ import android.provider.Settings
 import android.webkit.WebView
 import androidx.core.graphics.toColorInt
 import com.example.data.DpcAdminReceiver
+import com.example.dpc.WorkCloneBridge
 import java.util.UUID
 
 data class InstalledAppItem(
@@ -28,6 +29,7 @@ data class InstalledAppItem(
     val versionName: String,
     val isSystemApp: Boolean,
     val isClonedInWorkProfile: Boolean,
+    val hasWebPortal: Boolean,
     val icon: Drawable?
 )
 
@@ -35,6 +37,7 @@ data class DeviceHealthSnapshot(
     val currentSsaid: String,
     val isWorkProfileActive: Boolean,
     val isProfileOwner: Boolean,
+    val isCrossProfileBridgeReady: Boolean,
     val supportsManagedProfiles: Boolean,
     val profileCount: Int,
     val currentStoragePartition: String,
@@ -52,17 +55,20 @@ data class DeviceHealthSnapshot(
 )
 
 sealed class CloneActionResult {
+    data class ReadyToDispatchInstaller(val appName: String, val installerIntent: Intent) : CloneActionResult()
     data class ClonedDirectly(val appName: String) : CloneActionResult()
-    data class OpenedWorkStore(val appName: String) : CloneActionResult()
     data class NeedsWorkProfileSetup(val appName: String) : CloneActionResult()
+    data class NeedsBridgeSync(val appName: String) : CloneActionResult()
+    data class ForeignWorkProfile(val appName: String) : CloneActionResult()
     data class AlreadyCloned(val appName: String) : CloneActionResult()
     data class Error(val message: String) : CloneActionResult()
 }
 
 /**
  * Production Android Work Profile & Package Manager engine utilizing DevicePolicyManager,
- * UserManager, and LauncherApps to inspect installed apps, provision a managed Work Profile
- * (/data/user/10/ with an isolated SSAID), enable/clone apps, and launch them under the work handle.
+ * UserManager, LauncherApps, and WorkCloneBridge to provision a managed Work Profile
+ * (/data/user/10/ with an isolated SSAID), clone unmodified base + split APKs across
+ * profile boundaries, and launch genuine cloned apps natively under the Work UserHandle.
  */
 class WorkProfileManager(private val context: Context) {
 
@@ -91,6 +97,30 @@ class WorkProfileManager(private val context: Context) {
         return runCatching {
             devicePolicyManager?.isProfileOwnerApp(context.packageName) == true
         }.getOrDefault(false)
+    }
+
+    /**
+     * Returns true when Personal Profile MultiCreator can route cross-profile APK install intents
+     * straight to MultiCreator's Profile Owner installer inside User 10.
+     */
+    fun isCrossProfileBridgeReady(): Boolean {
+        if (isProfileOwner()) return true
+        return WorkCloneBridge.isCrossProfileCloneRouteReady(context)
+    }
+
+    /**
+     * Returns true if MultiCreator itself is installed inside the active Work Profile.
+     */
+    fun isSelfInstalledInWorkProfile(): Boolean {
+        val workHandle = getWorkUserHandle() ?: return false
+        return isAppInstalledInWorkProfile(context.packageName, workHandle)
+    }
+
+    /**
+     * Opens MultiCreator's Work Profile copy so it can initialize cross-profile policies.
+     */
+    fun launchSelfInWorkProfile(): Boolean {
+        return launchAppInWorkProfile(context.packageName)
     }
 
     /**
@@ -174,7 +204,8 @@ class WorkProfileManager(private val context: Context) {
                         appName = activityInfo.label?.toString()?.ifBlank { pkg } ?: pkg,
                         versionName = versionName,
                         isSystemApp = isSystem,
-                        isClonedInWorkProfile = pkg in workPackages,
+                        isClonedInWorkProfile = if (isProfileOwner()) true else pkg in workPackages,
+                        hasWebPortal = ContainerEngine.resolveWebPortalForPackage(pkg) != null,
                         icon = icon
                     )
                 )
@@ -199,7 +230,8 @@ class WorkProfileManager(private val context: Context) {
                         appName = resolveInfo.loadLabel(packageManager).toString().ifBlank { pkg },
                         versionName = versionName,
                         isSystemApp = isSystem,
-                        isClonedInWorkProfile = pkg in workPackages,
+                        isClonedInWorkProfile = if (isProfileOwner()) true else pkg in workPackages,
+                        hasWebPortal = ContainerEngine.resolveWebPortalForPackage(pkg) != null,
                         icon = runCatching { resolveInfo.loadIcon(packageManager) }.getOrNull()
                     )
                 )
@@ -215,15 +247,34 @@ class WorkProfileManager(private val context: Context) {
     }
 
     /**
-     * Triggers cross-profile enabling or Play Store installation inside the Work Profile.
-     * - If the app is already present in the Work Profile, reports AlreadyCloned.
-     * - If MultiCreator is the active Profile Owner, enables system apps immediately via DPM.
-     * - For third-party apps (Instagram, YouTube, etc.), opens the isolated Work Profile store page
-     *   so Play Integrity remains 100% genuine with a fresh SSAID partition.
+     * Stages an installed app's unmodified base + split APKs and prepares the cross-profile
+     * installer Intent to genuinely install the app into Android's Managed Work Profile (/data/user/10/).
+     *
+     * Never falls back to launching the personal profile app.
      */
-    fun cloneAppToWorkProfile(packageName: String, appName: String): CloneActionResult {
+    suspend fun prepareNativeWorkClone(packageName: String, appName: String): CloneActionResult {
         if (!checkIfWorkProfileActive()) {
             return CloneActionResult.NeedsWorkProfileSetup(appName)
+        }
+
+        // If MultiCreator itself is currently open INSIDE the Work Profile
+        if (isProfileOwner()) {
+            if (packageManager.getLaunchIntentForPackage(packageName) != null) {
+                return CloneActionResult.AlreadyCloned(appName)
+            }
+            val dpm = devicePolicyManager
+            if (dpm != null) {
+                val enabledDirectly = runCatching {
+                    dpm.enableSystemApp(DpcAdminReceiver.getComponentName(context), packageName)
+                    packageManager.getLaunchIntentForPackage(packageName) != null
+                }.getOrDefault(false)
+                if (enabledDirectly) {
+                    return CloneActionResult.ClonedDirectly(appName)
+                }
+            }
+            return CloneActionResult.Error(
+                "Switch to your Personal Profile copy of MultiCreator to clone new apps into this Work Vault."
+            )
         }
 
         val workHandle = getWorkUserHandle()
@@ -231,52 +282,51 @@ class WorkProfileManager(private val context: Context) {
             return CloneActionResult.AlreadyCloned(appName)
         }
 
-        // Attempt direct system app enablement if we hold Profile Owner rights
-        val dpm = devicePolicyManager
-        if (isProfileOwner() && dpm != null) {
-            val enabledDirectly = runCatching {
-                dpm.enableSystemApp(
-                    DpcAdminReceiver.getComponentName(context),
-                    packageName
-                )
-                true
-            }.getOrDefault(false)
-            if (enabledDirectly) {
-                return CloneActionResult.ClonedDirectly(appName)
+        // Verify that our cross-profile bridge to User 10's Profile Owner installer is active
+        if (!isCrossProfileBridgeReady()) {
+            return if (isSelfInstalledInWorkProfile()) {
+                CloneActionResult.NeedsBridgeSync(appName)
+            } else {
+                CloneActionResult.ForeignWorkProfile(appName)
             }
         }
 
-        // Open the app's official Play Store listing to install into the isolated Work Profile
-        // (preserving Google Play Integrity & avoiding untrusted APK repackaging bans)
-        val marketIntent = Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("market://details?id=$packageName")
-        ).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        return try {
-            context.startActivity(marketIntent)
-            CloneActionResult.OpenedWorkStore(appName)
-        } catch (_: ActivityNotFoundException) {
-            val webStoreIntent = Intent(
-                Intent.ACTION_VIEW,
-                Uri.parse("https://play.google.com/store/apps/details?id=$packageName")
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching {
-                context.startActivity(webStoreIntent)
-                CloneActionResult.OpenedWorkStore(appName)
-            }.getOrElse {
-                CloneActionResult.Error("Unable to open store installer for $appName.")
-            }
-        }
+        // Stage unmodified base.apk + all split APKs into FileProvider cache and return cross-profile Intent
+        return WorkCloneBridge.buildCrossProfileCloneIntent(context, packageName, appName)
+            .fold(
+                onSuccess = { installerIntent ->
+                    CloneActionResult.ReadyToDispatchInstaller(appName, installerIntent)
+                },
+                onFailure = { err ->
+                    CloneActionResult.Error(
+                        err.localizedMessage ?: "Failed to stage APK files for $appName."
+                    )
+                }
+            )
     }
 
     /**
-     * Launches a cloned application natively under the isolated Android Work Profile UserHandle.
+     * Builds the cross-profile uninstall Intent to remove a cloned app from User 10.
+     */
+    fun buildUninstallWorkCloneIntent(packageName: String, appName: String): Intent? {
+        if (!isCrossProfileBridgeReady()) return null
+        return WorkCloneBridge.buildCrossProfileUninstallIntent(packageName, appName)
+    }
+
+    /**
+     * Launches a cloned application natively under the isolated Android Work Profile UserHandle (/data/user/10/).
+     * When running inside the Work Profile itself, launches directly in User 10.
      */
     fun launchAppInWorkProfile(packageName: String): Boolean {
+        if (isProfileOwner()) {
+            val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return runCatching {
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+        }
+
         val workHandle = getWorkUserHandle() ?: return false
         val lApps = launcherApps ?: return false
 
@@ -321,6 +371,7 @@ class WorkProfileManager(private val context: Context) {
 
         val workActive = checkIfWorkProfileActive()
         val profileOwner = isProfileOwner()
+        val bridgeReady = isCrossProfileBridgeReady()
         val supportsManaged = isManagedProfileSupported()
         val profiles = userManager?.userProfiles ?: emptyList()
         val currentPartition = context.filesDir.absolutePath
@@ -336,9 +387,10 @@ class WorkProfileManager(private val context: Context) {
         val widevineLevel = queryWidevineSecurityLevel()
         val stealthCaps = WebSandboxManager(context).getWebViewStealthCapabilities()
 
-        var score = 35
+        var score = 30
         if (supportsManaged) score += 10
-        if (workActive) score += 20
+        if (workActive) score += 15
+        if (bridgeReady) score += 10
         if (stealthCaps.multiProfileSupported) score += 15
         if (stealthCaps.documentStartScriptSupported) score += 10
         if (widevineLevel.startsWith("L1")) score += 5
@@ -348,10 +400,11 @@ class WorkProfileManager(private val context: Context) {
             currentSsaid = ssaid,
             isWorkProfileActive = workActive,
             isProfileOwner = profileOwner,
+            isCrossProfileBridgeReady = bridgeReady,
             supportsManagedProfiles = supportsManaged,
             profileCount = profiles.size.coerceAtLeast(1),
             currentStoragePartition = currentPartition,
-            expectedWorkPartition = if (workActive) "/data/user/10 (Active)" else "/data/user/10 (Standby)",
+            expectedWorkPartition = if (workActive) "/data/user/10 (Active)" else "/data/user/10 (Not Activated)",
             androidVersionLabel = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             deviceModel = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}",
             webViewEngineVersion = webViewVersion,

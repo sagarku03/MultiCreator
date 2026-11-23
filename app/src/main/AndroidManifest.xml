@@ -26,6 +26,14 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
         </intent>
+        <intent>
+            <action android:name="com.example.action.WORK_CLONE_APK" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
+            <action android:name="com.example.action.WORK_UNINSTALL_APK" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
     </queries>
 
     <application
@@ -48,6 +56,61 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android 12+ Mandatory DPC Provisioning Mode Handler -->
+        <activity
+            android:name=".dpc.ProvisioningModeActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:theme="@style/Theme.MultiCreator">
+            <intent-filter>
+                <action android:name="android.app.action.GET_PROVISIONING_MODE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android 12+ Mandatory DPC Policy Compliance Handler (runs inside User 10) -->
+        <activity
+            android:name=".dpc.PolicyComplianceActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:theme="@style/Theme.MultiCreator">
+            <intent-filter>
+                <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Cross-Profile Work Vault APK Installer: disabled in Personal Profile, enabled ONLY in Work Profile -->
+        <activity
+            android:name=".dpc.WorkCloneInstallerActivity"
+            android:enabled="false"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MultiCreator">
+            <intent-filter>
+                <action android:name="com.example.action.WORK_CLONE_APK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.example.action.WORK_UNINSTALL_APK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Zero-flash Trampoline for Pinned Home Screen Work Clone Shortcuts -->
+        <activity
+            android:name=".dpc.WorkProfileTrampolineActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="com.example.action.LAUNCH_WORK_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

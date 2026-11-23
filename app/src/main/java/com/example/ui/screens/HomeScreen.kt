@@ -35,15 +35,18 @@ import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddToHomeScreen
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.HealthAndSafety
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -69,12 +72,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.graphics.drawable.toBitmap
 import com.example.R
 import com.example.data.UserAgentMode
 import com.example.data.WebContainerProfile
 import com.example.engine.AppContainer
 import com.example.engine.InstalledAppItem
+import com.example.ui.theme.AmberPulse
 import com.example.ui.theme.CyberGlassBackground
 import com.example.ui.theme.CyberViolet
 import com.example.ui.theme.EmeraldGlow
@@ -107,7 +113,10 @@ fun HomeScreen(
     onFilterModeChange: (AppFilterMode) -> Unit,
     onRefresh: () -> Unit,
     onProvisionWorkProfile: () -> Unit,
-    onCloneOrLaunchApp: (InstalledAppItem) -> Unit,
+    onSyncWorkBridge: () -> Unit,
+    onDismissWorkSetupDialog: () -> Unit,
+    onCloneOrLaunchNativeApp: (InstalledAppItem) -> Unit,
+    onOpenOrCreateWebClone: (InstalledAppItem) -> Unit,
     onCreateAdditionalSlot: (InstalledAppItem) -> Unit,
     onLaunchSpecificClone: (AppContainer) -> Unit,
     onDeleteLocalClone: (InstalledAppItem) -> Unit,
@@ -176,6 +185,7 @@ fun HomeScreen(
             ) {
                 MultiCreatorTopBar(
                     clonedCount = uiState.clonedCount,
+                    isProfileOwner = uiState.isProfileOwner,
                     onRefresh = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onRefresh()
@@ -193,9 +203,21 @@ fun HomeScreen(
                             uiState = uiState,
                             onSearchQueryChange = onSearchQueryChange,
                             onFilterModeChange = onFilterModeChange,
-                            onCloneOrLaunchApp = { app ->
+                            onProvisionWorkProfile = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onCloneOrLaunchApp(app)
+                                onProvisionWorkProfile()
+                            },
+                            onSyncWorkBridge = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onSyncWorkBridge()
+                            },
+                            onCloneOrLaunchNativeApp = { app ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCloneOrLaunchNativeApp(app)
+                            },
+                            onOpenOrCreateWebClone = { app ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onOpenOrCreateWebClone(app)
                             },
                             onCreateAdditionalSlot = { app ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -278,12 +300,26 @@ fun HomeScreen(
                     .widthIn(max = 560.dp)
             )
         }
+
+        // 1-Tap Work Vault Activation Dialog when cloning a native app before Work Profile is active
+        uiState.pendingWorkSetupApp?.let { targetApp ->
+            WorkVaultSetupDialog(
+                targetApp = targetApp,
+                onActivateWorkVault = onProvisionWorkProfile,
+                onUseWebClone = {
+                    onDismissWorkSetupDialog()
+                    onOpenOrCreateWebClone(targetApp)
+                },
+                onDismiss = onDismissWorkSetupDialog
+            )
+        }
     }
 }
 
 @Composable
 private fun MultiCreatorTopBar(
     clonedCount: Int,
+    isProfileOwner: Boolean,
     onRefresh: () -> Unit
 ) {
     Row(
@@ -321,9 +357,13 @@ private fun MultiCreatorTopBar(
                     color = TextPrimary
                 )
                 Text(
-                    text = "1-Click Isolated App Cloner",
+                    text = if (isProfileOwner) {
+                        "Work Vault Mode (/data/user/10/)"
+                    } else {
+                        "Native Work Vault & Anti-Ban Cloner"
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    color = TextSecondary
+                    color = if (isProfileOwner) EmeraldGlow else TextSecondary
                 )
             }
         }
@@ -352,7 +392,10 @@ private fun AppClonerTab(
     uiState: MultiCreatorUiState,
     onSearchQueryChange: (String) -> Unit,
     onFilterModeChange: (AppFilterMode) -> Unit,
-    onCloneOrLaunchApp: (InstalledAppItem) -> Unit,
+    onProvisionWorkProfile: () -> Unit,
+    onSyncWorkBridge: () -> Unit,
+    onCloneOrLaunchNativeApp: (InstalledAppItem) -> Unit,
+    onOpenOrCreateWebClone: (InstalledAppItem) -> Unit,
     onCreateAdditionalSlot: (InstalledAppItem) -> Unit,
     onLaunchSpecificClone: (AppContainer) -> Unit,
     onDeleteLocalClone: (InstalledAppItem) -> Unit,
@@ -382,11 +425,17 @@ private fun AppClonerTab(
             )
         }
 
-        // Compact Cyber-Glass Vault Hero Banner
+        // Work Vault Status & 1-Tap Provisioning Hero Card
         item(key = "vault_hero") {
             ClonerHeroCard(
-                clonedCount = uiState.clonedCount,
-                totalCount = uiState.installedApps.size
+                isWorkProfileActive = uiState.isWorkProfileActive,
+                isProfileOwner = uiState.isProfileOwner,
+                isCrossProfileBridgeReady = uiState.isCrossProfileBridgeReady,
+                isSelfInWorkProfile = uiState.isSelfInWorkProfile,
+                nativeWorkClonedCount = uiState.nativeWorkClonedCount,
+                webCloneCount = uiState.localClones.size,
+                onProvisionWorkProfile = onProvisionWorkProfile,
+                onSyncWorkBridge = onSyncWorkBridge
             )
         }
 
@@ -459,9 +508,11 @@ private fun AppClonerTab(
                     InstalledAppGlassCard(
                         app = app,
                         cloneSlots = cloneSlots,
-                        onCloneOrLaunch = { onCloneOrLaunchApp(app) },
-                        onAddAnotherSlot = { onCreateAdditionalSlot(app) },
-                        onLaunchSlot = onLaunchSpecificClone,
+                        isCloningThisApp = uiState.cloningPackageName == app.packageName,
+                        onCloneOrLaunchNative = { onCloneOrLaunchNativeApp(app) },
+                        onOpenOrCreateWebClone = { onOpenOrCreateWebClone(app) },
+                        onAddAnotherWebSlot = { onCreateAdditionalSlot(app) },
+                        onLaunchWebSlot = onLaunchSpecificClone,
                         onDeleteClone = { onDeleteLocalClone(app) },
                         onPinShortcut = { onPinAppShortcut(app) }
                     )
@@ -473,10 +524,17 @@ private fun AppClonerTab(
 
 @Composable
 private fun ClonerHeroCard(
-    clonedCount: Int,
-    totalCount: Int
+    isWorkProfileActive: Boolean,
+    isProfileOwner: Boolean,
+    isCrossProfileBridgeReady: Boolean,
+    isSelfInWorkProfile: Boolean,
+    nativeWorkClonedCount: Int,
+    webCloneCount: Int,
+    onProvisionWorkProfile: () -> Unit,
+    onSyncWorkBridge: () -> Unit
 ) {
     val shape = RoundedCornerShape(24.dp)
+    val vaultReady = isProfileOwner || (isWorkProfileActive && isCrossProfileBridgeReady)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -485,8 +543,8 @@ private fun ClonerHeroCard(
                 width = 1.dp,
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        if (clonedCount > 0) EmeraldGlow.copy(alpha = 0.50f) else NeonCyan.copy(alpha = 0.45f),
-                        CyberViolet.copy(alpha = 0.35f)
+                        if (vaultReady) EmeraldGlow.copy(alpha = 0.55f) else NeonCyan.copy(alpha = 0.50f),
+                        CyberViolet.copy(alpha = 0.40f)
                     )
                 ),
                 shape = shape
@@ -494,7 +552,7 @@ private fun ClonerHeroCard(
     ) {
         Image(
             painter = painterResource(id = R.drawable.img_cyber_vault_banner_1795339133969),
-            contentDescription = "MultiCreator Isolated Container Banner",
+            contentDescription = "MultiCreator Work Vault Banner",
             contentScale = ContentScale.Crop,
             modifier = Modifier.matchParentSize()
         )
@@ -504,9 +562,9 @@ private fun ClonerHeroCard(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            ObsidianDeep.copy(alpha = 0.94f),
-                            ObsidianDeep.copy(alpha = 0.72f),
-                            ObsidianDeep.copy(alpha = 0.25f)
+                            ObsidianDeep.copy(alpha = 0.95f),
+                            ObsidianDeep.copy(alpha = 0.78f),
+                            ObsidianDeep.copy(alpha = 0.35f)
                         )
                     )
                 )
@@ -523,26 +581,72 @@ private fun ClonerHeroCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 GlassBadge(
-                    label = "$clonedCount Active Clones",
-                    color = EmeraldGlow,
-                    pulsingDot = clonedCount > 0
+                    label = when {
+                        isProfileOwner -> "Work Vault (/data/user/10/)"
+                        vaultReady -> "Work Vault Ready"
+                        isWorkProfileActive && isSelfInWorkProfile -> "Bridge Sync Needed"
+                        isWorkProfileActive -> "External Work Profile"
+                        else -> "Setup Required for Native Clones"
+                    },
+                    color = when {
+                        vaultReady -> EmeraldGlow
+                        isWorkProfileActive -> NeonCyanBright
+                        else -> AmberPulse
+                    },
+                    pulsingDot = vaultReady
                 )
-                GlassBadge(
-                    label = "$totalCount Installed",
-                    color = CyberViolet,
-                    icon = Icons.Rounded.Shield
-                )
+                if (nativeWorkClonedCount > 0 || webCloneCount > 0) {
+                    GlassBadge(
+                        label = "$nativeWorkClonedCount Native • $webCloneCount Web",
+                        color = CyberViolet,
+                        icon = Icons.Rounded.Shield
+                    )
+                }
             }
             Text(
-                text = "Instant Multi-Account Vault",
+                text = when {
+                    isProfileOwner -> "Inside Isolated Work Profile"
+                    vaultReady -> "Real OS-Level App Cloning Active"
+                    else -> "Activate Android Work Vault"
+                },
                 style = MaterialTheme.typography.titleLarge,
                 color = TextPrimary
             )
             Text(
-                text = "Tap Clone App to create an isolated local container with a unique virtual SSAID and private cookie vault, then pin directly to your Home Screen.",
+                text = when {
+                    isProfileOwner -> "Every app shown here runs in /data/user/10/ with a separate SSAID & clean storage. Switch to Personal MultiCreator to clone more apps."
+                    vaultReady -> "Tap Clone Native on any app to install a genuine 2nd copy into /data/user/10/ with a fresh SSAID (Play Integrity safe), or tap Web Clone for 3rd/4th accounts."
+                    isWorkProfileActive && isSelfInWorkProfile -> "Work Profile detected! Tap Sync Bridge once so Personal MultiCreator can send unmodified APKs directly into /data/user/10/."
+                    isWorkProfileActive -> "Another app already owns this phone's Work Profile slot. Use Web Clone for instant multi-accounts, or remove the existing Work Profile in Android Settings."
+                    else -> "1-tap setup creates Android's official isolated Work Profile (/data/user/10/) with a brand-new SSAID & empty app data — zero root, zero factory reset."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
+
+            if (!isWorkProfileActive) {
+                Spacer(modifier = Modifier.height(2.dp))
+                LiquidPillButton(
+                    text = "Activate Work Vault (1-Tap Setup)",
+                    icon = Icons.Rounded.AdminPanelSettings,
+                    accentColors = listOf(NeonCyan, CyberViolet),
+                    onClick = onProvisionWorkProfile,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("hero_activate_work_vault_button")
+                )
+            } else if (!vaultReady && isSelfInWorkProfile) {
+                Spacer(modifier = Modifier.height(2.dp))
+                LiquidPillButton(
+                    text = "Sync Work Vault Clone Bridge",
+                    icon = Icons.Rounded.Sync,
+                    accentColors = listOf(EmeraldGlow, NeonCyan),
+                    onClick = onSyncWorkBridge,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("hero_sync_bridge_button")
+                )
+            }
         }
     }
 }
@@ -604,20 +708,27 @@ private fun AppFilterChipsRow(
 private fun InstalledAppGlassCard(
     app: InstalledAppItem,
     cloneSlots: List<AppContainer>,
-    onCloneOrLaunch: () -> Unit,
-    onAddAnotherSlot: () -> Unit,
-    onLaunchSlot: (AppContainer) -> Unit,
+    isCloningThisApp: Boolean,
+    onCloneOrLaunchNative: () -> Unit,
+    onOpenOrCreateWebClone: () -> Unit,
+    onAddAnotherWebSlot: () -> Unit,
+    onLaunchWebSlot: (AppContainer) -> Unit,
     onDeleteClone: () -> Unit,
     onPinShortcut: () -> Unit
 ) {
-    val latestClone = cloneSlots.lastOrNull()
-    val isCloned = cloneSlots.isNotEmpty() || app.isClonedInWorkProfile
+    val hasNativeClone = app.isClonedInWorkProfile
+    val hasWebClones = cloneSlots.isNotEmpty()
+    val isAnyCloned = hasNativeClone || hasWebClones
 
     LiquidGlassCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("app_card_${app.packageName}"),
-        highlightAccent = if (isCloned) EmeraldGlow else null,
+        highlightAccent = when {
+            hasNativeClone -> EmeraldGlow
+            hasWebClones -> NeonCyan
+            else -> null
+        },
         contentPadding = PaddingValues(14.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -629,13 +740,13 @@ private fun InstalledAppGlassCard(
                 AppIconBadge(
                     drawable = app.icon,
                     appName = app.appName,
-                    isCloned = isCloned
+                    isCloned = isAnyCloned
                 )
 
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
                             text = app.appName,
@@ -645,14 +756,16 @@ private fun InstalledAppGlassCard(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
-                        if (isCloned) {
+                        if (hasNativeClone) {
                             GlassBadge(
-                                label = if (cloneSlots.size > 1) {
-                                    "${cloneSlots.size} Clones"
-                                } else {
-                                    stringResource(R.string.status_active_clone)
-                                },
+                                label = "Work Clone",
                                 color = EmeraldGlow,
+                                pulsingDot = true
+                            )
+                        } else if (hasWebClones) {
+                            GlassBadge(
+                                label = "${cloneSlots.size} Web",
+                                color = NeonCyanBright,
                                 pulsingDot = true
                             )
                         }
@@ -664,65 +777,92 @@ private fun InstalledAppGlassCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    val metaLine = if (latestClone != null) {
-                        "v${app.versionName} • SSAID ${latestClone.virtualSsaid.take(8)}"
-                    } else {
-                        "v${app.versionName} • ${if (app.isSystemApp) "System" else "User"}"
+                    val metaLine = when {
+                        hasNativeClone -> "v${app.versionName} • Isolated /data/user/10/ (Fresh SSAID)"
+                        hasWebClones -> "v${app.versionName} • ${cloneSlots.size} Isolated Chromium Profile(s)"
+                        else -> "v${app.versionName} • ${if (app.isSystemApp) "System" else "User"}"
                     }
                     Text(
                         text = metaLine,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = if (latestClone != null) JetBrainsMonoFontFamily else MaterialTheme.typography.bodySmall.fontFamily
+                            fontFamily = if (isAnyCloned) JetBrainsMonoFontFamily else MaterialTheme.typography.bodySmall.fontFamily
                         ),
-                        color = if (latestClone != null) NeonCyanBright else TextSecondary.copy(alpha = 0.75f)
+                        color = when {
+                            hasNativeClone -> EmeraldGlow
+                            hasWebClones -> NeonCyanBright
+                            else -> TextSecondary.copy(alpha = 0.75f)
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                if (latestClone != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        GlassIconButton(
-                            icon = Icons.Rounded.Add,
-                            contentDescription = "Add another clone slot for ${app.appName}",
-                            tint = NeonCyanBright,
-                            accentGlow = NeonCyan,
-                            onClick = onAddAnotherSlot,
-                            modifier = Modifier.testTag("add_slot_${app.packageName}")
-                        )
-                        GlassIconButton(
-                            icon = Icons.Rounded.DeleteOutline,
-                            contentDescription = "Delete clone for ${app.appName}",
-                            tint = RoseAlert,
-                            onClick = onDeleteClone,
-                            modifier = Modifier.testTag("delete_clone_${app.packageName}")
-                        )
-                    }
+                if (isAnyCloned) {
+                    GlassIconButton(
+                        icon = Icons.Rounded.DeleteOutline,
+                        contentDescription = if (hasNativeClone) {
+                            "Uninstall Work Clone of ${app.appName}"
+                        } else {
+                            "Delete Web Clone of ${app.appName}"
+                        },
+                        tint = RoseAlert,
+                        onClick = onDeleteClone,
+                        modifier = Modifier.testTag("delete_clone_${app.packageName}")
+                    )
                 }
             }
 
-            // Multi-Slot Clone Switcher Chips (when 1+ isolated clones exist for this app)
-            if (cloneSlots.size > 1) {
+            // Multi-Slot Isolated Web Clone Chips (for 2nd/3rd/4th accounts via Chromium ProfileStore)
+            if (hasWebClones) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     cloneSlots.forEach { slot ->
                         val chipShape = RoundedCornerShape(50.dp)
                         Box(
                             modifier = Modifier
                                 .clip(chipShape)
-                                .background(EmeraldGlow.copy(alpha = 0.14f))
-                                .border(1.dp, EmeraldGlow.copy(alpha = 0.45f), chipShape)
-                                .clickable { onLaunchSlot(slot) }
+                                .background(NeonCyan.copy(alpha = 0.14f))
+                                .border(1.dp, NeonCyanBright.copy(alpha = 0.45f), chipShape)
+                                .clickable { onLaunchWebSlot(slot) }
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
                             Text(
-                                text = "#${slot.slotNumber} • ${slot.virtualSsaid.take(6)}",
+                                text = "Web #${slot.slotNumber} • ${slot.virtualSsaid.take(6)}",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
-                                color = EmeraldGlow
+                                color = NeonCyanBright
+                            )
+                        }
+                    }
+                    if (app.hasWebPortal) {
+                        val addShape = RoundedCornerShape(50.dp)
+                        Row(
+                            modifier = Modifier
+                                .clip(addShape)
+                                .background(CyberViolet.copy(alpha = 0.20f))
+                                .border(1.dp, CyberViolet.copy(alpha = 0.55f), addShape)
+                                .clickable { onAddAnotherWebSlot() }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                .testTag("add_slot_${app.packageName}"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = "Add Web Clone Slot",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Slot",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextPrimary
                             )
                         }
                     }
@@ -735,34 +875,133 @@ private fun InstalledAppGlassCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 LiquidPillButton(
-                    text = if (isCloned) {
-                        stringResource(R.string.action_launch)
-                    } else {
-                        stringResource(R.string.action_clone)
+                    text = when {
+                        isCloningThisApp -> "Staging APK…"
+                        hasNativeClone -> "Launch Work Clone"
+                        else -> "Clone Native"
                     },
-                    icon = if (isCloned) {
+                    icon = if (hasNativeClone) {
                         Icons.Rounded.PlayArrow
                     } else {
                         Icons.Rounded.ContentCopy
                     },
-                    accentColors = if (isCloned) {
+                    accentColors = if (hasNativeClone) {
                         listOf(EmeraldGlow, NeonCyan)
                     } else {
                         listOf(NeonCyan, CyberViolet)
                     },
-                    onClick = onCloneOrLaunch,
+                    enabled = !isCloningThisApp,
+                    onClick = onCloneOrLaunchNative,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("clone_button_${app.packageName}")
                 )
 
-                LiquidPillButton(
-                    text = stringResource(R.string.action_pin_home),
+                if (app.hasWebPortal) {
+                    LiquidPillButton(
+                        text = if (hasWebClones) "Web" else "Web Clone",
+                        icon = Icons.Rounded.Language,
+                        isPrimary = false,
+                        onClick = onOpenOrCreateWebClone,
+                        modifier = Modifier.testTag("web_clone_button_${app.packageName}")
+                    )
+                }
+
+                GlassIconButton(
                     icon = Icons.Rounded.AddToHomeScreen,
-                    isPrimary = false,
+                    contentDescription = "Add ${app.appName} Clone to Home Screen",
+                    tint = if (isAnyCloned) EmeraldGlow else TextSecondary,
+                    accentGlow = if (isAnyCloned) EmeraldGlow else null,
                     onClick = onPinShortcut,
                     modifier = Modifier.testTag("pin_button_${app.packageName}")
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkVaultSetupDialog(
+    targetApp: InstalledAppItem,
+    onActivateWorkVault: () -> Unit,
+    onUseWebClone: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            LiquidGlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                highlightAccent = NeonCyan,
+                contentPadding = PaddingValues(22.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AdminPanelSettings,
+                            contentDescription = null,
+                            tint = NeonCyanBright,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = "Activate Real App Cloning",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Text(
+                        text = "To install a real 2nd copy of ${targetApp.appName} (instead of opening your old personal app), Android needs its official isolated Work Vault (/data/user/10/).",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary
+                    )
+
+                    Text(
+                        text = "• Fresh SSAID & separate clean storage partition\n• Unmodified original APK (Play Integrity safe)\n• Personal data & apps stay 100% untouched (no factory reset)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    LiquidPillButton(
+                        text = "Activate Work Vault Now (1-Tap)",
+                        icon = Icons.Rounded.AdminPanelSettings,
+                        accentColors = listOf(NeonCyan, CyberViolet),
+                        onClick = onActivateWorkVault,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("dialog_activate_work_vault")
+                    )
+
+                    if (targetApp.hasWebPortal) {
+                        LiquidPillButton(
+                            text = "Or Open Instant Web Clone (No Setup)",
+                            icon = Icons.Rounded.Language,
+                            isPrimary = false,
+                            onClick = onUseWebClone,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("dialog_use_web_clone")
+                        )
+                    }
+
+                    LiquidPillButton(
+                        text = "Cancel",
+                        isPrimary = false,
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }

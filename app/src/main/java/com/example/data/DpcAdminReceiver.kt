@@ -7,25 +7,27 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.example.MainActivity
+import com.example.dpc.WorkCloneBridge
 
 /**
  * Device Policy Controller (DPC) receiver managing Android Work Profile lifecycle events.
- * Enables the isolated managed profile partition (/data/user/10/) with an independent SSAID.
+ * Enables the isolated managed profile partition (/data/user/10/) with an independent SSAID
+ * and configures the cross-profile APK cloning bridge.
  */
 class DpcAdminReceiver : DeviceAdminReceiver() {
 
     override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
         super.onProfileProvisioningComplete(context, intent)
-        val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
-            ?: return
-        val componentName = getComponentName(context)
-
-        try {
-            manager.setProfileName(componentName, PROFILE_DISPLAY_NAME)
-            manager.setProfileEnabled(componentName)
-            Log.i(TAG, "MultiCreator Work Profile enabled successfully.")
-        } catch (securityException: SecurityException) {
-            Log.e(TAG, "SecurityException enabling managed profile", securityException)
+        val configured = WorkCloneBridge.configureWorkProfilePolicies(context)
+        if (!configured) {
+            val manager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            val componentName = getComponentName(context)
+            runCatching {
+                manager?.setProfileName(componentName, PROFILE_DISPLAY_NAME)
+                manager?.setProfileEnabled(componentName)
+            }.onFailure { securityException ->
+                Log.e(TAG, "SecurityException enabling managed profile", securityException)
+            }
         }
 
         // Launch MultiCreator inside the newly provisioned profile to finalize setup

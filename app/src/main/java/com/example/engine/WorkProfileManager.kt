@@ -52,6 +52,18 @@ data class DeviceHealthSnapshot(
     val isolationScore: Int
 )
 
+data class ProvisioningPrecheckReport(
+    val isProvisioningAllowedByOs: Boolean,
+    val detectedProfileSummary: String,
+    val hasOemCloneProfile999: Boolean,
+    val oemCloneApps: List<String>,
+    val hasForeignWorkProfile: Boolean,
+    val foreignWorkProfileId: Int?,
+    val hasDisallowRestriction: Boolean,
+    val blockerHeadline: String,
+    val blockerDetail: String
+)
+
 sealed class CloneActionResult {
     data class ReadyToDispatchInstaller(val appName: String, val installerIntent: Intent) : CloneActionResult()
     data class ClonedDirectly(val appName: String) : CloneActionResult()
@@ -180,6 +192,115 @@ class WorkProfileManager(private val context: Context) {
     }
 
     /**
+     * Inspects live Android DevicePolicyManager & UserManager state before launching the
+     * ManagedProvisioning wizard, pinpointing the exact reason if Android would reject setup
+     * with "Can't set up device / contact your IT admin".
+     */
+    fun inspectProvisioningPrecheck(): ProvisioningPrecheckReport {
+        val allowedByOs = runCatching {
+            devicePolicyManager?.isProvisioningAllowed(
+                DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE
+            ) ?: false
+        }.getOrDefault(false)
+
+        val disallowManaged = runCatching {
+            userManager?.hasUserRestriction(UserManager.DISALLOW_ADD_MANAGED_PROFILE) == true
+        }.getOrDefault(false)
+
+        val currentHandle = Process.myUserHandle()
+        val profiles = userManager?.userProfiles ?: listOf(currentHandle)
+        val profileLabels = mutableListOf<String>()
+        var hasOem999 = false
+        val oemApps = mutableListOf<String>()
+        var foreignWorkId: Int? = null
+
+        for (handle in profiles) {
+            val uid = extractUserId(handle)
+            when {
+                handle == currentHandle -> profileLabels.add("User $uid (Personal)")
+                uid >= 900 -> {
+                    hasOem999 = true
+                    profileLabels.add("User $uid (OEM App Clone)")
+                    val appsIn999 = runCatching {
+                        launcherApps?.getActivityList(null, handle)
+                            ?.mapNotNull { it.label?.toString()?.takeIf(String::isNotBlank) }
+                            ?.distinct()
+                            ?.take(5)
+                            .orEmpty()
+                    }.getOrDefault(emptyList())
+                    oemApps.addAll(appsIn999)
+                }
+                else -> {
+                    val isOurs = isAppInstalledInWorkProfile(context.packageName, handle)
+                    if (!isOurs && foreignWorkId == null) {
+                        foreignWorkId = uid
+                    }
+                    profileLabels.add(
+                        if (isOurs) "User $uid (MultiCreator Vault)" else "User $uid (Other Work Profile)"
+                    )
+                }
+            }
+        }
+
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val isVivo = manufacturer.contains("vivo") || manufacturer.contains("iqoo")
+        val isXiaomi = manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")
+
+        val (headline, detail) = when {
+            foreignWorkId != null -> {
+                "Existing Work Profile (User $foreignWorkId) Detected" to
+                    "Android only allows 1 Work Profile per phone. User $foreignWorkId is currently occupying that slot (from another app like Shelter, Island, Intune, or a Work account). Remove it in Android Settings → Accounts / Users → Work → Remove work profile, then tap Retry."
+            }
+            hasOem999 && !allowedByOs -> {
+                val appHint = if (oemApps.isNotEmpty()) {
+                    " Active clones found in User 999: ${oemApps.joinToString(", ")}."
+                } else {
+                    ""
+                }
+                val oemPath = when {
+                    isVivo -> "Settings → Apps → App Clone (turn OFF all cloned apps), then restart your phone."
+                    isXiaomi -> "Settings → Apps → Dual Apps → Settings icon → Delete Dual apps' accounts, then restart."
+                    else -> "Settings → Apps → App Cloner (disable built-in OEM cloned apps), then restart."
+                }
+                "Phone's Built-In App Clone (User 999) Is Blocking Work Profile" to
+                    "Your phone's OS reported Provisioning = BLOCKED because its built-in OEM App Clone space (User 999) is active.$appHint Open $oemPath"
+            }
+            disallowManaged -> {
+                "Managed Profile Restricted by System Policy" to
+                    "Android has DISALLOW_ADD_MANAGED_PROFILE active (usually caused by Family Link, a corporate MDM, or an active Device Admin app). Check Settings → Security → Device admin apps."
+            }
+            !allowedByOs -> {
+                val extraHint = if (isVivo) {
+                    "On Vivo / iQOO (Funtouch OS): 1) Turn OFF built-in App Clone in Settings → Apps → App Clone; 2) Remove any old Work account in Settings → Accounts; 3) Temporarily set Screen Lock to None/Swipe and turn off Google Play Protect scanning while setting up."
+                } else {
+                    "Android's DevicePolicyManagerService returned isProvisioningAllowed = false. Check Settings → Accounts for any hidden Work Profile, disable built-in Dual Apps / App Clone, and ensure Play Protect isn't blocking sideloaded DPC setup."
+                }
+                "Android OS Blocked Work Profile Creation" to extraHint
+            }
+            else -> {
+                val postFailHint = if (isVivo) {
+                    "Vivo / iQOO Funtouch OS interrupted ManagedProvisioning. Try: 1) Turn off built-in App Clone (Settings → Apps → App Clone); 2) Temporarily set Screen Lock to 'None/Swipe' in Security Settings; 3) Temporarily disable Play Protect app scanning in Play Store; then tap Retry."
+                } else {
+                    "Android ManagedProvisioning cancelled setup ('Can't set up device'). Try: 1) Temporarily disable Google Play Protect scanning in Play Store for sideloaded APKs; 2) Set Screen Lock to None/Swipe during setup; 3) Remove any ghost Work Profile in Settings → Accounts."
+                }
+                "Work Vault Setup Interrupted by OS" to postFailHint
+            }
+        }
+
+        return ProvisioningPrecheckReport(
+            isProvisioningAllowedByOs = allowedByOs,
+            detectedProfileSummary = profileLabels.joinToString(" • "),
+            hasOemCloneProfile999 = hasOem999,
+            oemCloneApps = oemApps.distinct(),
+            hasForeignWorkProfile = foreignWorkId != null,
+            foreignWorkProfileId = foreignWorkId,
+            hasDisallowRestriction = disallowManaged,
+            blockerHeadline = headline,
+            blockerDetail = detail
+        )
+    }
+
+    /**
      * Builds the official Android system Intent to provision an isolated Managed Work Profile
      * backed by MultiCreator's DpcAdminReceiver.
      */
@@ -194,7 +315,6 @@ class WorkProfileManager(private val context: Context) {
                 @Suppress("DEPRECATION")
                 putExtra(DevicePolicyManager.EXTRA_PROVISIONING_MAIN_COLOR, "#06B6D4".toColorInt())
             }
-            putExtra(DevicePolicyManager.EXTRA_PROVISIONING_SKIP_ENCRYPTION, true)
         }
     }
 
@@ -497,6 +617,18 @@ class WorkProfileManager(private val context: Context) {
         return launchFirstAvailableIntent(
             listOf(
                 Intent(Settings.ACTION_SYNC_SETTINGS),
+                Intent(Settings.ACTION_SETTINGS)
+            )
+        )
+    }
+
+    /**
+     * Opens Android Apps settings (where Vivo App Clone / Xiaomi Dual Apps / OPPO App Cloner live).
+     */
+    fun openAndroidAppsSettings(): Boolean {
+        return launchFirstAvailableIntent(
+            listOf(
+                Intent(Settings.ACTION_APPLICATION_SETTINGS),
                 Intent(Settings.ACTION_SETTINGS)
             )
         )

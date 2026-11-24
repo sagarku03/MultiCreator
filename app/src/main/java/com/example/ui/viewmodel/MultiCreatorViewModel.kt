@@ -14,6 +14,7 @@ import com.example.engine.CloneActionResult
 import com.example.engine.ContainerEngine
 import com.example.engine.DeviceHealthSnapshot
 import com.example.engine.InstalledAppItem
+import com.example.engine.ProvisioningPrecheckReport
 import com.example.engine.ShortcutCreator
 import com.example.engine.ShortcutPinResult
 import com.example.engine.WebSandboxManager
@@ -65,6 +66,7 @@ data class MultiCreatorUiState(
     val cloningPackageName: String? = null,
     val pendingWorkSetupApp: InstalledAppItem? = null,
     val showWorkVaultTroubleshooter: Boolean = false,
+    val provisioningPrecheck: ProvisioningPrecheckReport? = null,
     val nativeWorkClonedCount: Int = 0,
     val clonedCount: Int = 0,
     val webContainers: List<WebContainerProfile> = emptyList(),
@@ -230,6 +232,12 @@ class MultiCreatorViewModel(
         _uiState.update { it.copy(showWorkVaultTroubleshooter = false) }
     }
 
+    fun openAndroidAppsSettings() {
+        if (!workProfileManager.openAndroidAppsSettings()) {
+            postMessage("Open Android Settings → Apps → App Clone / Dual Apps.")
+        }
+    }
+
     fun openAndroidAccountsSettings() {
         if (!workProfileManager.openAndroidAccountsSettings()) {
             postMessage("Open Android Settings → Passwords & accounts to inspect Work Profiles.")
@@ -242,7 +250,7 @@ class MultiCreatorViewModel(
         }
     }
 
-    fun requestWorkProfileProvisioning() {
+    fun requestWorkProfileProvisioning(forceLaunch: Boolean = false) {
         _uiState.update {
             it.copy(
                 pendingWorkSetupApp = null,
@@ -253,6 +261,15 @@ class MultiCreatorViewModel(
             postMessage("Android Managed Work Profiles are not supported by this ROM.")
             return
         }
+
+        val precheck = workProfileManager.inspectProvisioningPrecheck()
+        _uiState.update { it.copy(provisioningPrecheck = precheck) }
+
+        if (!forceLaunch && !precheck.isProvisioningAllowedByOs) {
+            _uiState.update { it.copy(showWorkVaultTroubleshooter = true) }
+            return
+        }
+
         val intent = workProfileManager.provisionWorkProfile()
         _events.tryEmit(MultiCreatorEvent.LaunchWorkProfileProvisioning(intent))
     }
@@ -273,7 +290,13 @@ class MultiCreatorViewModel(
         } else {
             val alreadyActive = workProfileManager.checkIfWorkProfileActive()
             if (!alreadyActive) {
-                _uiState.update { it.copy(showWorkVaultTroubleshooter = true) }
+                val latestPrecheck = workProfileManager.inspectProvisioningPrecheck()
+                _uiState.update {
+                    it.copy(
+                        provisioningPrecheck = latestPrecheck,
+                        showWorkVaultTroubleshooter = true
+                    )
+                }
             } else {
                 postMessage("Work Vault detected! Refreshing installed apps…")
             }

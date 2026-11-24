@@ -20,7 +20,7 @@ class ProvisioningModeActivity : ComponentActivity() {
 
         val resultIntent = Intent()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val allowedModes = intent.getIntegerArrayListExtra(
+            val allowedModes = intent?.getIntegerArrayListExtra(
                 DevicePolicyManager.EXTRA_PROVISIONING_ALLOWED_PROVISIONING_MODES
             )
             val chosenMode = if (
@@ -34,7 +34,7 @@ class ProvisioningModeActivity : ComponentActivity() {
 
             resultIntent.putExtra(DevicePolicyManager.EXTRA_PROVISIONING_MODE, chosenMode)
             @Suppress("DEPRECATION")
-            val adminBundle = intent.getBundleExtra(
+            val adminBundle = intent?.getBundleExtra(
                 DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
             )
             if (adminBundle != null) {
@@ -51,27 +51,41 @@ class ProvisioningModeActivity : ComponentActivity() {
 }
 
 /**
- * Mandatory Android 12+ (API 31+) DPC handler for ACTION_ADMIN_POLICY_COMPLIANCE.
- * Executes inside the newly provisioned Work Profile (/data/user/10/) immediately after setup,
- * activates the cross-profile cloning bridge, and signals completion to Android.
+ * Mandatory Android 12+ (API 31+) DPC handler for ACTION_ADMIN_POLICY_COMPLIANCE and
+ * ACTION_PROVISIONING_SUCCESSFUL.
+ *
+ * IMPORTANT: During ACTION_ADMIN_POLICY_COMPLIANCE, Android ManagedProvisioning expects
+ * this activity to return RESULT_OK and finish cleanly without hijacking the task stack
+ * via startActivity(), otherwise SetupWizard / FinalizationActivity can abort with
+ * "Can't set up device".
  */
 class PolicyComplianceActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        WorkCloneBridge.configureWorkProfilePolicies(applicationContext)
-
+        // Signal compliance immediately so any non-fatal policy warning never aborts setup
         setResult(RESULT_OK)
+
+        runCatching {
+            WorkCloneBridge.configureWorkProfilePolicies(applicationContext)
+        }
+
+        val isPostSetupSuccess =
+            intent?.action == DevicePolicyManager.ACTION_PROVISIONING_SUCCESSFUL
+
         finish()
 
-        // Also open MultiCreator inside the Work Profile or let the calling personal profile resume cleanly
-        runCatching {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                putExtra(DpcAdminReceiver.EXTRA_PROVISIONING_JUST_COMPLETED, true)
+        // Only launch MainActivity when invoked via post-setup PROVISIONING_SUCCESSFUL,
+        // never during ADMIN_POLICY_COMPLIANCE (where ManagedProvisioning owns the flow).
+        if (isPostSetupSuccess) {
+            runCatching {
+                val launchIntent = Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    putExtra(DpcAdminReceiver.EXTRA_PROVISIONING_JUST_COMPLETED, true)
+                }
+                startActivity(launchIntent)
             }
-            startActivity(intent)
         }
     }
 }

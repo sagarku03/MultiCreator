@@ -371,7 +371,22 @@ class ContainerEngine(private val context: Context) {
                 pkg.contains("twitch") -> "https://m.twitch.tv/"
                 pkg.contains("spotify") -> "https://open.spotify.com/"
                 pkg.contains("google.android.gm") -> "https://mail.google.com/"
-                pkg.contains("chrome") || pkg.contains("browser") -> "https://duckduckgo.com/"
+                pkg.contains("amazon.mshop") -> "https://www.amazon.in/"
+                pkg.contains("flipkart") -> "https://www.flipkart.com/"
+                pkg.contains("meesho") -> "https://www.meesho.com/"
+                pkg.contains("myntra") -> "https://www.myntra.com/"
+                pkg.contains("netflix") -> "https://www.netflix.com/"
+                pkg.contains("hotstar") -> "https://www.hotstar.com/"
+                pkg.contains("openai.chatgpt") -> "https://chatgpt.com/"
+                pkg.contains("anthropic.claude") -> "https://claude.ai/"
+                pkg.contains("perplexity") -> "https://www.perplexity.ai/"
+                pkg.contains("github") -> "https://github.com/"
+                pkg.contains("canva") -> "https://www.canva.com/"
+                pkg.contains("quora") -> "https://www.quora.com/"
+                pkg.contains("outlook") -> "https://outlook.live.com/"
+                pkg.contains("chrome") || pkg.contains("browser") || pkg.contains("brave") ||
+                    pkg.contains("firefox") || pkg.contains("opera") || pkg.contains("emmx") ||
+                    pkg.contains("duckduckgo") -> "https://duckduckgo.com/"
                 else -> null
             }
         }

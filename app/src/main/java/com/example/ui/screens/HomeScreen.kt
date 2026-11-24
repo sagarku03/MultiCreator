@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,6 +83,7 @@ import com.example.data.UserAgentMode
 import com.example.data.WebContainerProfile
 import com.example.engine.AppContainer
 import com.example.engine.InstalledAppItem
+import com.example.engine.ProvisioningPrecheckReport
 import com.example.ui.theme.AmberPulse
 import com.example.ui.theme.CyberGlassBackground
 import com.example.ui.theme.CyberViolet
@@ -115,9 +117,11 @@ fun HomeScreen(
     onFilterModeChange: (AppFilterMode) -> Unit,
     onRefresh: () -> Unit,
     onProvisionWorkProfile: () -> Unit,
+    onForceProvisionWorkProfile: () -> Unit,
     onSyncWorkBridge: () -> Unit,
     onDismissWorkSetupDialog: () -> Unit,
     onDismissWorkVaultTroubleshooter: () -> Unit,
+    onOpenAppsSettings: () -> Unit,
     onOpenAccountsSettings: () -> Unit,
     onOpenSecuritySettings: () -> Unit,
     onCloneOrLaunchNativeApp: (InstalledAppItem) -> Unit,
@@ -319,12 +323,18 @@ fun HomeScreen(
             )
         }
 
-        // OEM-Aware Work Vault Troubleshooter if Android blocked/cancelled Managed Profile creation
+        // OEM-Aware Live Work Vault Troubleshooter if Android blocked/cancelled Managed Profile creation
         if (uiState.showWorkVaultTroubleshooter) {
             WorkVaultTroubleshooterDialog(
+                precheck = uiState.provisioningPrecheck,
+                onOpenAppsSettings = onOpenAppsSettings,
                 onOpenAccountsSettings = onOpenAccountsSettings,
                 onOpenSecuritySettings = onOpenSecuritySettings,
-                onRetrySetup = onProvisionWorkProfile,
+                onRetrySetup = onForceProvisionWorkProfile,
+                onUseWebStealthNow = {
+                    onDismissWorkVaultTroubleshooter()
+                    onSelectTab(MainTab.WEB_STEALTH)
+                },
                 onDismiss = onDismissWorkVaultTroubleshooter
             )
         }
@@ -1024,25 +1034,21 @@ private fun WorkVaultSetupDialog(
 
 @Composable
 private fun WorkVaultTroubleshooterDialog(
+    precheck: ProvisioningPrecheckReport?,
+    onOpenAppsSettings: () -> Unit,
     onOpenAccountsSettings: () -> Unit,
     onOpenSecuritySettings: () -> Unit,
     onRetrySetup: () -> Unit,
+    onUseWebStealthNow: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val manufacturer = remember { Build.MANUFACTURER.lowercase() }
-    val oemHint = remember(manufacturer) {
-        when {
-            manufacturer.contains("vivo") || manufacturer.contains("iqoo") ->
-                "Vivo / iQOO (Funtouch OS / OriginOS) detected:\n1) Temporarily set Screen Lock to 'None' or 'Swipe' in Security Settings, then tap Retry — Vivo's lock screen often interrupts Work Profile creation.\n2) Remove any old Work Profile under Settings → Accounts.\n3) Once Work Vault is created, you can re-enable your PIN/fingerprint!"
-            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") ->
-                "MIUI / HyperOS detected: Built-in 'Dual Apps' creates a hidden User 999 that blocks Android Work Profiles. Delete Dual Apps in Settings → Apps → Dual Apps → Settings icon → Delete Dual apps' accounts, then retry."
-            manufacturer.contains("samsung") ->
-                "Samsung One UI detected: Remove any existing Work Profile or Secure Folder conflict in Settings → Accounts and backup → Manage accounts, then retry."
-            manufacturer.contains("oneplus") || manufacturer.contains("oppo") || manufacturer.contains("realme") ->
-                "ColorOS / OxygenOS / Realme UI detected: Turn off built-in 'App Cloner' apps first, as they occupy Android's managed user slot."
-            else ->
-                "Android allows only 1 Managed Work Profile per device. Remove any old/ghost Work Profile in Settings → Passwords & accounts, or temporarily set Screen Lock to None/Swipe if setup crashed."
-        }
+    val headline = precheck?.blockerHeadline ?: "Work Vault Setup Blocked by OS"
+    val detailText = precheck?.blockerDetail ?: when {
+        manufacturer.contains("vivo") || manufacturer.contains("iqoo") ->
+            "Vivo / iQOO (Funtouch OS) blocked ManagedProvisioning:\n1) Turn OFF built-in App Clone (Settings → Apps → App Clone) and restart.\n2) Temporarily set Screen Lock to None/Swipe and turn off Play Protect scanning during setup.\n3) Remove any old Work Profile under Settings → Accounts."
+        else ->
+            "Android allows only 1 Managed Work Profile per device. Remove any existing Work Profile or built-in Dual Apps / App Clone, then retry."
     }
 
     Dialog(
@@ -1052,14 +1058,17 @@ private fun WorkVaultTroubleshooterDialog(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
+                .padding(horizontal = 18.dp)
         ) {
             LiquidGlassCard(
                 modifier = Modifier.fillMaxWidth(),
                 highlightAccent = AmberPulse,
-                contentPadding = PaddingValues(22.dp)
+                contentPadding = PaddingValues(20.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1068,46 +1077,95 @@ private fun WorkVaultTroubleshooterDialog(
                             imageVector = Icons.Rounded.WarningAmber,
                             contentDescription = null,
                             tint = AmberPulse,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                         Text(
-                            text = "Work Vault Setup Blocked by OS",
-                            style = MaterialTheme.typography.titleLarge,
+                            text = headline,
+                            style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary
                         )
                     }
 
+                    // Live Android System Diagnostics Box
+                    if (precheck != null) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(ObsidianElevated.copy(alpha = 0.85f))
+                                .border(1.dp, GlassBorderMedium, RoundedCornerShape(14.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "LIVE DEVICE DIAGNOSTIC",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NeonCyanBright
+                            )
+                            Text(
+                                text = "OS Allow Managed Profile: ${if (precheck.isProvisioningAllowedByOs) "YES" else "BLOCKED (false)"}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = if (precheck.isProvisioningAllowedByOs) EmeraldGlow else RoseAlert
+                            )
+                            Text(
+                                text = "Profiles: ${precheck.detectedProfileSummary}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = TextPrimary
+                            )
+                            if (precheck.oemCloneApps.isNotEmpty()) {
+                                Text(
+                                    text = "User 999 Clones: ${precheck.oemCloneApps.joinToString(", ")}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    color = AmberPulse
+                                )
+                            }
+                        }
+                    }
+
                     Text(
-                        text = oemHint,
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = detailText,
+                        style = MaterialTheme.typography.bodySmall,
                         color = TextPrimary
                     )
 
-                    Text(
-                        text = "Tip: While fixing OS Work Profile, you can still tap 'Web Clone' on Instagram, YouTube, WhatsApp, X, TikTok & more for instant multi-account isolation with zero OS setup.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
-
                     LiquidPillButton(
-                        text = "1. Open Accounts & Work Settings",
+                        text = "1. Open Apps / App Clone Settings",
                         isPrimary = false,
-                        onClick = onOpenAccountsSettings,
+                        onClick = onOpenAppsSettings,
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    LiquidPillButton(
-                        text = "2. Open Screen Lock / Security",
-                        isPrimary = false,
-                        onClick = onOpenSecuritySettings,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidPillButton(
+                            text = "2. Accounts",
+                            isPrimary = false,
+                            onClick = onOpenAccountsSettings,
+                            modifier = Modifier.weight(1f)
+                        )
+                        LiquidPillButton(
+                            text = "3. Security",
+                            isPrimary = false,
+                            onClick = onOpenSecuritySettings,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
                     LiquidPillButton(
-                        text = "Retry Work Vault Setup",
+                        text = "Launch Work Vault Wizard Anyway",
                         icon = Icons.Rounded.AdminPanelSettings,
                         accentColors = listOf(NeonCyan, CyberViolet),
                         onClick = onRetrySetup,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    LiquidPillButton(
+                        text = "Use Instant Web Clones (Works Now)",
+                        icon = Icons.Rounded.Language,
+                        accentColors = listOf(EmeraldGlow, NeonCyan),
+                        onClick = onUseWebStealthNow,
                         modifier = Modifier.fillMaxWidth()
                     )
 

@@ -62,23 +62,26 @@
         <!-- Android 12+ Mandatory DPC Provisioning Mode Handler -->
         <activity
             android:name=".dpc.ProvisioningModeActivity"
+            android:excludeFromRecents="true"
             android:exported="true"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
-            android:theme="@style/Theme.MultiCreator">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.app.action.GET_PROVISIONING_MODE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
-        <!-- Android 12+ Mandatory DPC Policy Compliance Handler (runs inside User 10) -->
+        <!-- Android 12+ Mandatory DPC Policy Compliance & Post-Provisioning Handler (runs inside User 10) -->
         <activity
             android:name=".dpc.PolicyComplianceActivity"
+            android:excludeFromRecents="true"
             android:exported="true"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
-            android:theme="@style/Theme.MultiCreator">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+                <action android:name="android.app.action.PROVISIONING_SUCCESSFUL" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
